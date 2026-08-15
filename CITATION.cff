@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: >-
+  If you use RepliSketch in your work, please cite it using the metadata below.
+title: RepliSketch
+type: software
+authors:
+  - family-names: Berkemeier
+    given-names: Francisco
+    email: francisco.berkemeier@gmail.com
+repository-code: https://github.com/fberkemeier/RepliSketch
+url: https://github.com/fberkemeier/RepliSketch
+license: MIT

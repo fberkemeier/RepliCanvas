@@ -1,0 +1,297 @@
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f7f6" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>RepliSketch | DNA replication vector studio</title>
+    <link rel="stylesheet" href="assets/css/replisketch.css" />
+    <!-- Mediabunny 1.51.0 (MPL-2.0); license: assets/vendor/MEDIABUNNY-LICENSE.txt -->
+    <script defer src="assets/vendor/mediabunny-1.51.0.min.js"></script>
+    <script defer src="assets/js/replisketch.js"></script>
+  </head>
+  <body>
+    <div class="rs-app" id="replisketch-app">
+      <header class="rs-topbar">
+        <div class="rs-brand">
+          <div class="rs-brand-copy">
+            <h1>RepliSketch</h1>
+            <p>DNA replication vector studio</p>
+          </div>
+          <img class="rs-brand-logo" src="assets/img/replisketch_logo.png" alt="" />
+        </div>
+
+        <div class="rs-top-actions" aria-label="Playback and document actions">
+          <div class="rs-top-playback" aria-label="Playback controls">
+            <button class="rs-play-button rs-top-play-button" id="playButton" type="button" aria-pressed="false">
+              <span id="playIcon" aria-hidden="true">&#9654;</span>
+              <span id="playLabel">Run</span>
+            </button>
+
+            <div class="rs-top-range rs-top-phase-control">
+              <label for="progressControl">
+                <span>S phase time</span>
+                <output id="progressOutput" for="progressControl">12%</output>
+              </label>
+              <input id="progressControl" type="range" min="0" max="100" step="1" value="12" />
+            </div>
+
+            <div class="rs-top-range rs-speed-control">
+              <label for="speedControl">
+                <span>Speed</span>
+                <output id="speedOutput" for="speedControl">1.0x</output>
+              </label>
+              <input id="speedControl" type="range" min="0.25" max="5" step="0.25" value="1" />
+            </div>
+          </div>
+
+          <span class="rs-top-actions-divider" aria-hidden="true"></span>
+
+          <button class="rs-button rs-icon-button" id="undoButton" type="button" title="Undo" aria-label="Undo" disabled>
+            <span aria-hidden="true">&#8630;</span>
+          </button>
+          <button class="rs-button rs-icon-button" id="redoButton" type="button" title="Redo" aria-label="Redo" disabled>
+            <span aria-hidden="true">&#8631;</span>
+          </button>
+          <button class="rs-button rs-icon-button" id="resetButton" type="button" title="Reset molecule" aria-label="Reset molecule">
+            <span aria-hidden="true">&#8635;</span>
+          </button>
+          <div class="rs-download" id="downloadControl">
+            <button
+              class="rs-button rs-button-primary rs-download-button"
+              id="downloadButton"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="downloadMenu"
+            >
+              <span aria-hidden="true">&#8595;</span>
+              <span id="downloadButtonLabel">Download</span>
+              <span class="rs-menu-chevron" aria-hidden="true">&#9662;</span>
+            </button>
+            <div class="rs-download-menu" id="downloadMenu" role="menu" hidden>
+              <button id="exportPngButton" type="button" role="menuitem"><strong>PNG</strong><span>Background, 2x</span></button>
+              <button id="exportSvgButton" type="button" role="menuitem"><strong>SVG</strong><span>Editable vector</span></button>
+              <button id="exportPdfButton" type="button" role="menuitem"><strong>PDF</strong><span>Print-ready vector</span></button>
+              <button id="exportMp4Button" type="button" role="menuitem"><strong>MP4</strong><span>60 fps S phase</span></button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="rs-body">
+        <aside class="rs-sidebar" aria-label="RepliSketch controls">
+          <section class="rs-control-section rs-compact-section">
+            <div class="rs-section-heading">
+              <h2>Controls</h2>
+            </div>
+
+            <div class="rs-control-guide" aria-label="Canvas controls">
+              <div><span class="rs-guide-symbol" aria-hidden="true">+</span><span>Add origin</span></div>
+              <div><span class="rs-guide-symbol" aria-hidden="true">&#8596;</span><span>Split bubble</span></div>
+              <div><kbd>Shift</kbd><span>Cut / drag region</span></div>
+              <div><kbd>Ctrl</kbd><span>Move view</span></div>
+              <div><span class="rs-guide-wheel" aria-hidden="true">&#8597;</span><span>Wheel zoom</span></div>
+            </div>
+
+            <div class="rs-inline-actions">
+              <button class="rs-text-button" id="deleteOriginButton" type="button" disabled>Delete origin</button>
+              <button class="rs-text-button" id="clearCutsButton" type="button" disabled>Clear cuts</button>
+            </div>
+          </section>
+
+          <section class="rs-control-section rs-compact-section">
+            <div class="rs-section-heading">
+              <h2>Geometry</h2>
+            </div>
+
+            <div class="rs-select-control">
+              <label for="modelControl">Model</label>
+              <select id="modelControl">
+                <option value="standard" selected>Standard</option>
+                <option value="elegant">Schematic duplex</option>
+                <option value="minimal">Minimal lines</option>
+              </select>
+            </div>
+
+            <div class="rs-range-control">
+              <label for="lengthControl">
+                <span>Genomic length</span>
+                <output id="lengthOutput" for="lengthControl">72 bp</output>
+              </label>
+              <input id="lengthControl" type="range" min="10" max="400" step="5" value="90" />
+            </div>
+
+            <div class="rs-range-control">
+              <label for="pairResolutionControl">
+                <span>Base-pair resolution</span>
+                <output id="pairResolutionOutput" for="pairResolutionControl">3 between crossovers</output>
+              </label>
+              <input id="pairResolutionControl" type="range" min="1" max="10" step="1" value="3" />
+            </div>
+
+            <div class="rs-range-control">
+              <label for="basePairWidthControl">
+                <span>Base-pair width</span>
+                <output id="basePairWidthOutput" for="basePairWidthControl">1.8 px</output>
+              </label>
+              <input id="basePairWidthControl" type="range" min="0.2" max="7" step="0.1" value="1.8" />
+            </div>
+
+            <div class="rs-range-control">
+              <label for="weightControl">
+                <span>Strand weight</span>
+                <output id="weightOutput" for="weightControl">4 px</output>
+              </label>
+              <input id="weightControl" type="range" min="1" max="8" step="0.5" value="4" />
+            </div>
+
+            <div class="rs-range-control">
+              <label for="daughterSpacingControl">
+                <span>Replicated spacing</span>
+                <output id="daughterSpacingOutput" for="daughterSpacingControl">152 px</output>
+              </label>
+              <input id="daughterSpacingControl" type="range" min="64" max="400" step="4" value="152" />
+            </div>
+
+            <div class="rs-range-control">
+              <label for="doubleStrandHeightControl">
+                <span>Double-strand height</span>
+                <output id="doubleStrandHeightOutput" for="doubleStrandHeightControl">24 px</output>
+              </label>
+              <input id="doubleStrandHeightControl" type="range" min="8" max="56" step="2" value="24" />
+            </div>
+          </section>
+
+          <section class="rs-control-section rs-compact-section">
+            <div class="rs-section-heading">
+              <h2>Layers</h2>
+            </div>
+
+            <label class="rs-toggle" for="pairsToggle">
+              <span>Base pairs</span>
+              <input id="pairsToggle" type="checkbox" checked />
+              <span class="rs-toggle-track" aria-hidden="true"></span>
+            </label>
+            <label class="rs-toggle" for="newDnaToggle">
+              <span>New DNA</span>
+              <input id="newDnaToggle" type="checkbox" checked />
+              <span class="rs-toggle-track" aria-hidden="true"></span>
+            </label>
+            <label class="rs-toggle" for="labelsToggle">
+              <span>Labels and directions</span>
+              <input id="labelsToggle" type="checkbox" checked />
+              <span class="rs-toggle-track" aria-hidden="true"></span>
+            </label>
+          </section>
+
+          <section class="rs-control-section rs-compact-section">
+            <div class="rs-section-heading">
+              <h2>Colour</h2>
+            </div>
+
+            <div class="rs-colour-grid">
+              <label for="templateAColor">
+                <input id="templateAColor" type="color" value="#067e94" />
+                <span>Template A</span>
+              </label>
+              <label for="templateBColor">
+                <input id="templateBColor" type="color" value="#022851" />
+                <span>Template B</span>
+              </label>
+              <label for="newDnaColor">
+                <input id="newDnaColor" type="color" value="#8b1e2d" />
+                <span>New DNA</span>
+              </label>
+              <label for="basePairColor">
+                <input id="basePairColor" type="color" value="#022851" />
+                <span>Base pairs</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="rs-control-section rs-compact-section rs-advanced-section">
+            <details class="rs-options-menu" id="advancedOptions">
+              <summary>
+                <span>Advanced options</span>
+                <span class="rs-options-chevron" aria-hidden="true">&#9662;</span>
+              </summary>
+              <div class="rs-options-panel">
+                <label class="rs-toggle" for="crossoverGapsToggle">
+                  <span>Crossover cutouts</span>
+                  <input id="crossoverGapsToggle" type="checkbox" />
+                  <span class="rs-toggle-track" aria-hidden="true"></span>
+                </label>
+                <label class="rs-toggle" for="gridToggle">
+                  <span>Background grid</span>
+                  <input id="gridToggle" type="checkbox" checked />
+                  <span class="rs-toggle-track" aria-hidden="true"></span>
+                </label>
+                <label class="rs-toggle" for="alwaysShowControlsToggle">
+                  <span>Always show controls</span>
+                  <input id="alwaysShowControlsToggle" type="checkbox" checked />
+                  <span class="rs-toggle-track" aria-hidden="true"></span>
+                </label>
+                <div class="rs-range-control rs-options-range">
+                  <label for="transitionTightnessControl">
+                    <span>Fork transition</span>
+                    <output id="transitionTightnessOutput" for="transitionTightnessControl">Smooth</output>
+                  </label>
+                  <input id="transitionTightnessControl" type="range" min="-100" max="100" step="1" value="0" />
+                  <div class="rs-transition-scale" aria-hidden="true">
+                    <span>Circular</span><span>Smooth</span><span>Sharp</span>
+                  </div>
+                </div>
+                <label class="rs-colour-option" for="backgroundColorControl">
+                  <span>Background colour</span>
+                  <input id="backgroundColorControl" type="color" value="#f8faf9" />
+                </label>
+              </div>
+            </details>
+          </section>
+        </aside>
+
+        <main class="rs-workspace">
+          <div class="rs-canvas-header">
+            <div class="rs-stat">
+              <span>Length</span>
+              <strong id="lengthStat">72 bp</strong>
+            </div>
+            <div class="rs-stat">
+              <span>Origins</span>
+              <strong id="originStat">2</strong>
+            </div>
+            <div class="rs-stat">
+              <span>Forks</span>
+              <strong id="forkStat">4</strong>
+            </div>
+            <div class="rs-stat">
+              <span>Replicated</span>
+              <strong id="replicatedStat">12%</strong>
+            </div>
+          </div>
+
+          <div class="rs-canvas-frame" id="canvasFrame">
+            <svg id="dnaCanvas" viewBox="0 0 1200 640" role="img" aria-labelledby="dnaCanvasTitle dnaCanvasDescription" tabindex="0"></svg>
+            <div class="rs-canvas-legend" id="canvasLegend" aria-label="Strand colour legend"></div>
+            <div class="rs-chromosome-ruler" id="chromosomeRuler" aria-label="Genomic position"></div>
+            <div class="rs-zoom-controls" aria-label="Preview zoom">
+              <button id="zoomOutButton" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
+              <output id="zoomOutput" aria-live="polite">100%</output>
+              <button id="zoomInButton" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
+              <button id="fitViewButton" type="button" title="Reset view" aria-label="Reset view">&#8596;</button>
+            </div>
+          </div>
+
+          <div class="rs-statusbar" aria-live="polite">
+            <span id="statusMessage">Ready</span>
+            <a class="rs-video-save-link" id="videoSaveLink" hidden>Save MP4</a>
+            <span id="selectionMessage">No selection</span>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>
