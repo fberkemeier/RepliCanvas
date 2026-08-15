@@ -6,7 +6,7 @@ type: software
 authors:
   - family-names: Berkemeier
     given-names: Francisco
-    email: francisco.berkemeier@gmail.com
+    email: fp409@cam.ac.uk
 repository-code: https://github.com/fberkemeier/RepliSketch
 url: https://github.com/fberkemeier/RepliSketch
 license: MIT

@@ -4,19 +4,15 @@
 
 <p align="center"><strong>Make beautiful figures and videos of DNA replication.</strong></p>
 
+<p align="center">
+  <a href="https://fberkemeier.github.io/RepliSketch/"><strong>Launch RepliSketch →</strong></a>
+</p>
+
 RepliSketch is a lightweight, browser-based studio for drawing, exploring, and animating DNA replication. Shape replication bubbles and forks directly on the canvas, tune the molecular geometry and colours, then export publication-ready figures or a complete S-phase animation.
 
-## Run locally
+## Use RepliSketch
 
-RepliSketch is a static HTML/CSS/JavaScript application: there is no installation or build step.
-
-```bash
-git clone https://github.com/fberkemeier/RepliSketch.git
-cd RepliSketch
-python -m http.server 8000
-```
-
-Open [http://localhost:8000](http://localhost:8000). On Windows, `py -m http.server 8000` works as an alternative.
+Open the [live RepliSketch app](https://fberkemeier.github.io/RepliSketch/). No installation or build step is required.
 
 ## How it works
 
@@ -51,7 +47,7 @@ If RepliSketch supports your research, please cite the software using the metada
 Bug reports, feature ideas, and scientific suggestions are very welcome. Please [open an issue](https://github.com/fberkemeier/RepliSketch/issues) or contact:
 
 **Francisco Berkemeier**  
-[francisco.berkemeier@gmail.com](mailto:francisco.berkemeier@gmail.com) · [github.com/fberkemeier](https://github.com/fberkemeier)
+[fp409@cam.ac.uk](mailto:fp409@cam.ac.uk) · [github.com/fberkemeier](https://github.com/fberkemeier)
 
 ## License
 
