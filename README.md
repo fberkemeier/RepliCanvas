@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/img/logo1.png" alt="RepliSketch logo" width="150" />
+  <img src="assets/img/logo1.png" alt="RepliSketch logo" width="420" />
 </p>
-
-<h1 align="center">RepliSketch</h1>
 
 <p align="center"><strong>Make beautiful figures and videos of DNA replication.</strong></p>
 

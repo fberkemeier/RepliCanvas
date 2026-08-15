@@ -22,6 +22,7 @@
     daughterSpacing: { min: 64, max: 400 },
     doubleStrandHeight: { min: 8, max: 56 },
     transitionTightness: { min: -100, max: 100 },
+    terminalSmoothing: { min: 0, max: 6 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
   const MAX_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.max;
@@ -72,6 +73,7 @@
     advanced: {
       strandModel: "standard",
       transitionTightness: 0,
+      terminalSmoothing: 1.5,
       crossoverGaps: false,
       grid: true,
       alwaysShowControls: true,
@@ -143,6 +145,19 @@
     return `${value}%`;
   }
 
+  function terminalSmoothing(sourceState = state) {
+    return boundedControlValue(
+      "terminalSmoothing",
+      sourceState?.advanced?.terminalSmoothing,
+      DEFAULTS.advanced.terminalSmoothing
+    );
+  }
+
+  function terminalSmoothingLabel(sourceState = state) {
+    const value = terminalSmoothing(sourceState);
+    return value <= EPSILON ? "Snap" : `${Number(value.toFixed(2))} bp`;
+  }
+
   function transitionProfile(value, sourceState = state) {
     const progress = clamp(value, 0, 1);
     const tightness = transitionTightness(sourceState);
@@ -182,6 +197,11 @@
       "transitionTightness",
       sourceState.advanced.transitionTightness,
       DEFAULTS.advanced.transitionTightness
+    );
+    sourceState.advanced.terminalSmoothing = boundedControlValue(
+      "terminalSmoothing",
+      sourceState.advanced.terminalSmoothing,
+      DEFAULTS.advanced.terminalSmoothing
     );
     sourceState.length = boundedControlValue("length", sourceState.length);
     sourceState.progress = boundedControlValue("progress", sourceState.progress);
@@ -239,16 +259,17 @@
   };
 
   function terminalPullSpan(terminalPosition, direction, sourceState = state) {
-    const count = crossoverCount(sourceState);
-    const step = 1 / count;
-    // Use the same half-crossover pull span on both sides of a terminal.
-    // Directional nearest-crossover distances differ at an off-lattice merge,
-    // which made one fork flatten earlier than its opposing partner.
-    return (step * VIEW.moleculeWidth) / 2;
+    // Express the transition reach in displayed genomic units. The shared
+    // lattice spacing keeps it coherent with length/resolution changes, while
+    // using one span for both facing forks preserves exact merge symmetry.
+    return (terminalSmoothing(sourceState) * VIEW.moleculeWidth) / basePairLattice(sourceState).subdivisionCount;
   }
 
   function terminalEdgeBlend(distance, pullSpan = FORK_TERMINAL_BLEND_PX) {
-    return 1 - smoothstep(distance / Math.max(0.75, pullSpan));
+    if (pullSpan <= EPSILON) {
+      return distance <= EPSILON ? 1 : 0;
+    }
+    return 1 - smoothstep(distance / Math.max(EPSILON, pullSpan));
   }
   const daughterDetailFade = (profile) => smoothstep((profile - NASCENT_PROFILE_THRESHOLD) / 0.18);
   // Parental pairs should visually end at the fork. Keep only a very short
@@ -684,11 +705,38 @@
     return Math.max(1, Math.round((sourceState.length / BASE_PAIRS_PER_TURN) * 2));
   }
 
+  function basePairLattice(sourceState = state) {
+    const resolution = basePairResolution(sourceState);
+    const subdivisionCount = crossoverCount(sourceState) * (resolution + 1);
+    // The helix begins and ends halfway between crossovers. When the number of
+    // subdivisions per crossover is odd (an even resolution), the crossover-
+    // anchored lattice therefore begins half a base-pair step inside each end.
+    const edgeOffset = resolution % 2 === 0 ? 0.5 : 0;
+    return {
+      subdivisionCount,
+      edgeOffset,
+      count: subdivisionCount - edgeOffset * 2,
+    };
+  }
+
   function basePairCount(sourceState = state) {
-    // Resolution is the number of interior pair positions between consecutive
-    // 180-degree crossovers. N interiors divide each crossover interval into
-    // exactly N + 1 equal genomic/base-pair intervals.
-    return crossoverCount(sourceState) * (basePairResolution(sourceState) + 1);
+    return basePairLattice(sourceState).count;
+  }
+
+  function basePairFraction(index, sourceState = state) {
+    const lattice = basePairLattice(sourceState);
+    const position = clamp(Math.round(Number(index) || 0), 0, lattice.count);
+    return (lattice.edgeOffset + position) / lattice.subdivisionCount;
+  }
+
+  function genomicPositionAtFraction(fraction, sourceState = state) {
+    const lattice = basePairLattice(sourceState);
+    const moleculeFraction = clamp(Number(fraction) || 0, 0, 1);
+    return clamp(
+      Math.round(moleculeFraction * lattice.subdivisionCount - lattice.edgeOffset),
+      0,
+      lattice.count
+    );
   }
 
   function basePairDisplayStep() {
@@ -1168,11 +1216,10 @@
   function renderBasePairs(model) {
     if (!state.layers.pairs || !modelSupportsDoubleStrandDetails()) return "";
 
-    const pairCount = basePairCount();
     const pairs = [];
 
     displayedBasePairPositions().forEach((index) => {
-      const x = VIEW.x0 + (index / pairCount) * VIEW.moleculeWidth;
+      const x = VIEW.x0 + basePairFraction(index) * VIEW.moleculeWidth;
       if (isCutGap(x, 3)) return;
       const replication = replicationAt(x, model);
       const yA = templateY(x, "a", model);
@@ -1435,13 +1482,7 @@
   function rulerMajorEvery(pairSpacing, sourceState = state) {
     const pairCount = basePairCount(sourceState);
     const minimumStep = Math.max(1, Math.ceil(82 / Math.max(pairSpacing, EPSILON)));
-
-    // Use a divisor of the full length so every labelled interval, including
-    // the final one, has identical visual and genomic spacing.
-    for (let step = minimumStep; step <= pairCount; step += 1) {
-      if (pairCount % step === 0) return step;
-    }
-    return pairCount;
+    return Math.min(pairCount, niceIntegerCeiling(minimumStep));
   }
 
   function rulerBasePairPosition(index, sourceState = state) {
@@ -1449,11 +1490,16 @@
   }
 
   function rulerTickPosition(basePairPosition, start, end, sourceState = state) {
-    return start + (rulerBasePairPosition(basePairPosition, sourceState) / basePairCount(sourceState)) * (end - start);
+    return start + basePairFraction(rulerBasePairPosition(basePairPosition, sourceState), sourceState) * (end - start);
   }
 
   function rulerTickIndices(majorEvery, sourceState = state) {
-    return displayedBasePairPositions(sourceState);
+    const pairCount = basePairCount(sourceState);
+    const step = Math.max(1, Math.round(Number(majorEvery) || 1));
+    const indices = [];
+    for (let index = 0; index <= pairCount; index += step) indices.push(index);
+    if (indices.at(-1) !== pairCount) indices.push(pairCount);
+    return indices;
   }
 
   function updateGrid() {
@@ -1489,26 +1535,26 @@
     const bounds = ruler.getBoundingClientRect();
     const start = transformedSvgPoint(VIEW.x0, VIEW.centerY, matrix).x - bounds.left;
     const end = transformedSvgPoint(VIEW.x1, VIEW.centerY, matrix).x - bounds.left;
+    const lattice = basePairLattice();
     const pairCount = basePairCount();
-    const pairSpacing = (end - start) / pairCount;
+    const pairSpacing = (end - start) / lattice.subdivisionCount;
     if (!Number.isFinite(pairSpacing) || pairSpacing <= 0) return;
 
-    const firstVisible = clamp(Math.ceil((0 - start) / pairSpacing), 0, pairCount);
-    const lastVisible = clamp(Math.floor((ruler.clientWidth - start) / pairSpacing), 0, pairCount);
+    const firstTick = start + lattice.edgeOffset * pairSpacing;
+    const firstVisible = clamp(Math.ceil((0 - firstTick) / pairSpacing), 0, pairCount);
+    const lastVisible = clamp(Math.floor((ruler.clientWidth - firstTick) / pairSpacing), 0, pairCount);
     const majorEvery = rulerMajorEvery(pairSpacing);
     const ticks = [];
 
     rulerTickIndices(majorEvery).forEach((index) => {
       if (index < firstVisible || index > lastVisible) return;
       const position = rulerTickPosition(index, start, end);
-      const endpoint = index === 0 || index === pairCount;
-      const labelled = endpoint || index % majorEvery === 0;
       const endpointClass = index === 0 ? " is-start" : index === pairCount ? " is-end" : "";
       const label = String(rulerBasePairPosition(index));
       ticks.push(
-        `<span class="rs-ruler-tick${labelled ? " is-labelled" : ""}${endpointClass}" style="left:${fixed(position)}px">${
-          labelled ? `<output>${label}</output>` : ""
-        }</span>`
+        `<span class="rs-ruler-tick is-labelled${endpointClass}" style="left:${fixed(
+          position
+        )}px"><output>${label}</output></span>`
       );
     });
 
@@ -1669,7 +1715,7 @@
     updateReadouts(model);
     updateCanvasLegend();
     elements.selectionMessage.textContent = selectedOrigin
-      ? `O${selectedOrigin.index + 1} at ${Math.round(selectedOrigin.position * basePairCount())} bp`
+      ? `O${selectedOrigin.index + 1} at ${genomicPositionAtFraction(selectedOrigin.position)} bp`
       : "No selection";
     updateGrid();
     updateChromosomeRuler();
@@ -1690,6 +1736,9 @@
     elements.daughterSpacingOutput.textContent = `${state.daughterSpacing} px`;
     if (elements.transitionTightnessOutput) {
       elements.transitionTightnessOutput.textContent = transitionTightnessLabel();
+    }
+    if (elements.terminalSmoothingOutput) {
+      elements.terminalSmoothingOutput.textContent = terminalSmoothingLabel();
     }
     elements.speedOutput.textContent = `${state.speed.toFixed(2).replace(/0$/, "")}x`;
     elements.zoomOutput.textContent = `${Math.round(viewState.zoom * 100)}%`;
@@ -1719,6 +1768,9 @@
     elements.daughterSpacingControl.value = state.daughterSpacing;
     if (elements.transitionTightnessControl) {
       elements.transitionTightnessControl.value = state.advanced.transitionTightness;
+    }
+    if (elements.terminalSmoothingControl) {
+      elements.terminalSmoothingControl.value = terminalSmoothing();
     }
     elements.speedControl.value = state.speed;
     elements.templateAColor.value = state.colors.templateA;
@@ -1885,7 +1937,7 @@
     } else if (state.cuts.length < 10) {
       pushSnapshot();
       state.cuts = normaliseCutRegions([...state.cuts, { start: position, end: position }]);
-      setStatus(`Break added at ${Math.round(position * basePairCount())} bp`);
+      setStatus(`Break added at ${genomicPositionAtFraction(position)} bp`);
     } else {
       setStatus("Break limit reached");
     }
@@ -1903,8 +1955,8 @@
 
     pushSnapshot(startSnapshot);
     state.cuts = nextCuts;
-    const startBp = Math.round(range.start * basePairCount());
-    const endBp = Math.round(range.end * basePairCount());
+    const startBp = genomicPositionAtFraction(range.start);
+    const endBp = genomicPositionAtFraction(range.end);
     setStatus(`Region removed from ${startBp}\u2013${endBp} bp`);
     render();
   }
@@ -1937,7 +1989,7 @@
     synchroniseOriginPositions();
     syncControls();
     render();
-    setStatus(`Origin added at ${Math.round(origin.position * basePairCount())} bp`);
+    setStatus(`Origin added at ${genomicPositionAtFraction(origin.position)} bp`);
   }
 
   function bubbleFromBounds(start, end, sourceState = state) {
@@ -2263,7 +2315,7 @@
       setStatus(
         dragResult.consumed
           ? "Overlapping origin and its forks were consumed"
-          : `Replication bubble moved to ${Math.round(dragResult.origin.position * basePairCount())} bp`
+          : `Replication bubble moved to ${genomicPositionAtFraction(dragResult.origin.position)} bp`
       );
     } else {
       const desiredPosition = normalisedX(point.x);
@@ -3099,6 +3151,16 @@
         render();
       });
     }
+    if (elements.terminalSmoothingControl) {
+      bindContinuousControl(elements.terminalSmoothingControl, (value) => {
+        state.advanced.terminalSmoothing = boundedControlValue(
+          "terminalSmoothing",
+          value,
+          DEFAULTS.advanced.terminalSmoothing
+        );
+        render();
+      });
+    }
 
     [
       [elements.templateAColor, "templateA"],
@@ -3265,6 +3327,7 @@
       "doubleStrandHeightControl",
       "daughterSpacingControl",
       "transitionTightnessControl",
+      "terminalSmoothingControl",
       "speedControl",
       "lengthOutput",
       "progressOutput",
@@ -3274,6 +3337,7 @@
       "doubleStrandHeightOutput",
       "daughterSpacingOutput",
       "transitionTightnessOutput",
+      "terminalSmoothingOutput",
       "speedOutput",
       "zoomOutButton",
       "zoomInButton",

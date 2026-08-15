@@ -90,29 +90,76 @@ svg:focus-visible {
   gap: 12px;
 }
 
-.rs-brand-copy {
-  min-width: 0;
-}
-
 .rs-brand-logo {
-  width: 50px;
   height: 50px;
-  flex: 0 0 50px;
+  width: auto;
+  flex: 0 0 auto;
   object-fit: contain;
 }
 
-.rs-brand h1 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 750;
-  line-height: 1.1;
+.rs-project-meta {
+  display: grid;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-items: center;
+  gap: 3px;
 }
 
-.rs-brand p {
-  margin: 4px 0 0;
-  color: var(--rs-muted);
-  font-size: 12px;
-  line-height: 1.2;
+.rs-project-links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.rs-project-link {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: #54727d;
+  text-decoration: none;
+  transition: color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.rs-project-link:hover,
+.rs-project-link:focus-visible {
+  background: #eaf6fa;
+  color: #167f9e;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.rs-project-link:focus-visible {
+  box-shadow: 0 0 0 2px rgba(22, 127, 158, 0.2);
+}
+
+.rs-project-link svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.rs-project-link:first-child svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.rs-project-version {
+  padding: 2px 6px;
+  border: 1px solid #cae9f2;
+  border-radius: 999px;
+  background: #edf8fb;
+  color: #3c9ab7;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .rs-top-actions {
@@ -1261,6 +1308,10 @@ input[type="range"] {
 }
 
 @media (max-width: 980px) {
+  .rs-project-meta {
+    display: none;
+  }
+
   .rs-top-playback {
     gap: 7px;
     padding-right: 8px;
@@ -1303,17 +1354,9 @@ input[type="range"] {
   }
 
   .rs-brand-logo {
-    width: 40px;
     height: 40px;
-    flex-basis: 40px;
-  }
-
-  .rs-brand h1 {
-    font-size: 17px;
-  }
-
-  .rs-brand p {
-    display: none;
+    width: auto;
+    flex-basis: auto;
   }
 
   .rs-top-playback {
@@ -1412,10 +1455,6 @@ input[type="range"] {
     flex: 0 0 auto;
     gap: 0;
   }
-
-  .rs-brand-copy {
-    display: none;
-  }
 }
 
 @media (max-width: 520px) {
@@ -1434,18 +1473,14 @@ input[type="range"] {
   }
 
   .rs-brand-logo {
-    width: 34px;
-    height: 34px;
-    flex-basis: 34px;
+    height: 30px;
+    width: auto;
+    flex-basis: auto;
   }
 
   .rs-brand {
     flex: 0 0 auto;
     gap: 5px;
-  }
-
-  .rs-brand h1 {
-    display: none;
   }
 
   .rs-top-playback {
@@ -1590,6 +1625,7 @@ input[type="range"] {
   #resetButton {
     display: none;
   }
+
 }
 
 @media (max-width: 340px) {

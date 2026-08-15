@@ -20,6 +20,8 @@ const testApi = `
     basePairCount,
     basePairDistanceFade,
     basePairDisplayStep,
+    basePairFraction,
+    basePairLattice,
     basePairResolution,
     basePairForkDistanceFade,
     basePairForkInfluence,
@@ -41,6 +43,7 @@ const testApi = `
     forksShouldCollapse,
     getReplicationModel,
     getReplicationModelAtTravel,
+    genomicPositionAtFraction,
     helixWave,
     insetBasePairSegment,
     interactionHalfHeight,
@@ -91,6 +94,8 @@ const testApi = `
     templateY,
     terminalEdgeBlend,
     terminalPullSpan,
+    terminalSmoothing,
+    terminalSmoothingLabel,
     transitionProfile,
     transitionTightness,
     transitionTightnessLabel,
@@ -172,62 +177,147 @@ function renderedCubicYAtX(pathData, x) {
   );
 }
 
-test("base-pair resolution sets N plus one equal intervals per crossover on one integer lattice", () => {
+test("base-pair resolution keeps N strict interiors between crossover-anchored lattice sites", () => {
   const state = freshState();
   state.length = 90;
   api.setState(state);
-  const densities = [];
   const crossovers = Math.round((state.length / 10) * 2);
+  const sampleXs = Array.from(
+    { length: 41 },
+    (_, index) => api.VIEW.x0 + (index / 40) * api.VIEW.moleculeWidth
+  );
+  let referenceWave = null;
 
   for (let resolution = 1; resolution <= 10; resolution += 1) {
     state.pairResolution = resolution;
-    const step = api.basePairDisplayStep();
+    const subdivisions = resolution + 1;
+    const lattice = crossovers * subdivisions;
+    const phase = resolution % 2 === 0 ? 0.5 : 0;
+    const genomicMaximum = lattice - phase * 2;
     const positions = api.displayedBasePairPositions();
-    const expectedLength = crossovers * (resolution + 1);
-    assert.equal(api.basePairCount(), expectedLength);
-    assert.equal(api.basePairCount() / crossovers, resolution + 1);
-    assert.equal(step, 1);
+
+    const observedLattice = api.basePairLattice();
+    assert.equal(observedLattice.subdivisionCount, lattice);
+    assert.equal(observedLattice.edgeOffset, phase);
+    assert.equal(observedLattice.count, genomicMaximum);
+    assert.equal(api.basePairCount(), genomicMaximum);
+    assert.equal(api.basePairDisplayStep(), 1);
     assert.equal(positions[0], 0);
-    assert.equal(positions.at(-1), expectedLength);
-    assert.equal(positions.length, expectedLength + 1);
+    assert.equal(positions.at(-1), genomicMaximum);
+    assert.equal(positions.length, genomicMaximum + 1);
     assert.ok(positions.every(Number.isInteger), "each rendered pair/tick must represent an integer base pair");
     assert.ok(positions.every((position, index) => position === index));
-    densities.push(positions.length);
-  }
 
-  assert.ok(densities.every((count, index) => index === 0 || count > densities[index - 1]));
+    const fractions = positions.map((index) => api.basePairFraction(index));
+    assert.ok(Math.abs(fractions[0] - phase / lattice) < 1e-12);
+    assert.ok(Math.abs(fractions.at(-1) - (1 - phase / lattice)) < 1e-12);
+    assert.ok(Math.abs(fractions[0] + fractions.at(-1) - 1) < 1e-12, "edge insets must be centred");
+    assert.ok(
+      fractions.slice(1).every((fraction, index) => Math.abs(fraction - fractions[index] - 1 / lattice) < 1e-12),
+      "all base-pair sites must remain equally spaced"
+    );
+
+    for (let crossover = 0; crossover < crossovers; crossover += 1) {
+      const crossoverFraction = (crossover + 0.5) / crossovers;
+      const rawCrossoverIndex = crossoverFraction * lattice - phase;
+      const crossoverIndex = Math.round(rawCrossoverIndex);
+      assert.ok(
+        Math.abs(rawCrossoverIndex - crossoverIndex) < 1e-9,
+        "every strand crossover must lie on the base-pair lattice"
+      );
+      assert.ok(Math.abs(api.basePairFraction(crossoverIndex) - crossoverFraction) < 1e-12);
+
+      if (crossover === crossovers - 1) continue;
+      const nextCrossoverIndex = crossoverIndex + subdivisions;
+      const strictInteriors = positions.filter(
+        (position) => position > crossoverIndex && position < nextCrossoverIndex
+      );
+      assert.equal(strictInteriors.length, resolution, "the control value is the strict interior site count");
+
+      const midpointFraction = (crossover + 1) / crossovers;
+      const hasMidpointSite = fractions.some((fraction) => Math.abs(fraction - midpointFraction) < 1e-12);
+      assert.equal(hasMidpointSite, resolution % 2 === 1, "only odd resolutions place a site at the midpoint");
+    }
+
+    positions.forEach((position) => {
+      assert.equal(api.genomicPositionAtFraction(api.basePairFraction(position)), position);
+    });
+    assert.equal(api.genomicPositionAtFraction(0), 0);
+    assert.equal(api.genomicPositionAtFraction(1), genomicMaximum);
+
+    const wave = sampleXs.map((x) => api.helixWave(x));
+    if (referenceWave) assert.deepEqual(wave, referenceWave, "resolution must never move the template strands");
+    else referenceWave = wave;
+  }
 
   state.pairResolution = 2;
-  assert.equal(api.basePairCount() / crossovers, 3, "two interior positions must create three equal intervals");
-  const intervalWidth = api.VIEW.moleculeWidth / crossovers;
-  const pairSpacing = api.VIEW.moleculeWidth / api.basePairCount();
-  assert.ok(Math.abs(intervalWidth / pairSpacing - 3) < 1e-12);
-  for (let crossoverBoundary = 0; crossoverBoundary <= crossovers; crossoverBoundary += 1) {
-    assert.equal(api.displayedBasePairPositions()[crossoverBoundary * 3], crossoverBoundary * 3);
-  }
+  assert.equal(api.basePairLattice().subdivisionCount, crossovers * 3);
+  assert.equal(api.basePairCount(), crossovers * 3 - 1);
+  assert.equal(api.displayedBasePairPositions().length, crossovers * 3);
+  assert.ok(Math.abs(api.basePairFraction(0) - 0.5 / (crossovers * 3)) < 1e-12);
+  assert.ok(Math.abs(api.basePairFraction(api.basePairCount()) - (1 - 0.5 / (crossovers * 3))) < 1e-12);
+
+  state.origins = [];
+  const renderedXs = [...api.renderBasePairs(api.getReplicationModel()).matchAll(/<line x1="([\d.-]+)"/g)].map(
+    (match) => Number(match[1])
+  );
+  const firstCrossoverX = api.VIEW.x0 + (0.5 / crossovers) * api.VIEW.moleculeWidth;
+  const secondCrossoverX = api.VIEW.x0 + (1.5 / crossovers) * api.VIEW.moleculeWidth;
+  const midpointX = (firstCrossoverX + secondCrossoverX) / 2;
+  const firstIntervalRungs = renderedXs.filter((x) => x > firstCrossoverX && x < secondCrossoverX);
+  assert.equal(firstIntervalRungs.length, 2, "resolution 2 must render exactly two rungs in a full crossover interval");
+  assert.ok(
+    firstIntervalRungs.every((x) => Math.abs(x - midpointX) > 0.1),
+    "an even resolution must not render a midpoint rung"
+  );
 });
 
-test("ruler endpoint and evenly spaced labels use the resolution-derived genomic length", () => {
+test("ruler uses the centred parity-aware lattice and its integer genomic coordinates", () => {
   const state = freshState();
   api.setState(state);
   for (let length = 10; length <= 400; length += 5) {
     for (let resolution = 1; resolution <= 10; resolution += 1) {
       state.length = length;
       state.pairResolution = resolution;
-      const pairCount = api.basePairCount();
-      const majorEvery = api.rulerMajorEvery(7.25);
-      assert.equal(pairCount, Math.round((length / 10) * 2) * (resolution + 1));
-      assert.equal(pairCount % majorEvery, 0, "the endpoint must complete a full labelled interval");
+      const lattice = Math.round((length / 10) * 2) * (resolution + 1);
+      const phase = resolution % 2 === 0 ? 0.5 : 0;
+      const genomicMaximum = lattice - phase * 2;
+      const start = -137.5;
+      const end = 1284.25;
+      const pairSpacing = (end - start) / lattice;
+      const majorEvery = api.rulerMajorEvery(pairSpacing);
+
+      const observedLattice = api.basePairLattice();
+      assert.equal(observedLattice.subdivisionCount, lattice);
+      assert.equal(observedLattice.edgeOffset, phase);
+      assert.equal(observedLattice.count, genomicMaximum);
+      assert.equal(api.basePairCount(), genomicMaximum);
+      assert.ok(Number.isInteger(majorEvery) && majorEvery >= 1);
       for (const index of api.displayedBasePairPositions()) {
         assert.equal(api.rulerBasePairPosition(index), index);
+        assert.equal(api.genomicPositionAtFraction(api.basePairFraction(index)), index);
+        assert.ok(
+          Math.abs(api.rulerTickPosition(index, start, end) - (start + api.basePairFraction(index) * (end - start))) <
+            1e-9
+        );
       }
-      assert.equal(api.rulerBasePairPosition(pairCount), pairCount);
+      assert.equal(api.rulerBasePairPosition(genomicMaximum), genomicMaximum);
       const ticks = api.rulerTickIndices(majorEvery);
-      assert.deepEqual(ticks, api.displayedBasePairPositions());
-      const labels = [];
-      for (let labelled = 0; labelled <= pairCount; labelled += majorEvery) labels.push(labelled);
-      assert.ok(labels.every(Number.isInteger));
-      assert.ok(labels.slice(1).every((label, index) => label - labels[index] === majorEvery));
+      assert.equal(ticks[0], 0);
+      assert.equal(ticks.at(-1), genomicMaximum);
+      assert.ok(ticks.slice(1, -1).every((index) => index % majorEvery === 0));
+      assert.ok(ticks.slice(1).every((index, tickIndex) => index > ticks[tickIndex]));
+
+      const expectedStart = start + phase * pairSpacing;
+      const expectedEnd = end - phase * pairSpacing;
+      assert.ok(Math.abs(api.rulerTickPosition(0, start, end) - expectedStart) < 1e-9);
+      assert.ok(Math.abs(api.rulerTickPosition(genomicMaximum, start, end) - expectedEnd) < 1e-9);
+      assert.ok(
+        Math.abs(
+          api.rulerTickPosition(0, start, end) + api.rulerTickPosition(genomicMaximum, start, end) - (start + end)
+        ) < 1e-9,
+        "the ruler must shrink symmetrically around the unchanged molecule"
+      );
     }
   }
 });
@@ -257,7 +347,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     daughterSpacing: 1,
     doubleStrandHeight: 1,
     speed: 0.01,
-    advanced: { transitionTightness: -1000 },
+    advanced: { terminalSmoothing: -10, transitionTightness: -1000 },
   });
   assert.equal(low.length, 10);
   assert.equal(low.progress, 0);
@@ -267,6 +357,7 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(low.daughterSpacing, 64);
   assert.equal(low.doubleStrandHeight, 8);
   assert.equal(low.speed, 0.25);
+  assert.equal(low.advanced.terminalSmoothing, 0);
   assert.equal(low.advanced.transitionTightness, -100);
 
   const high = api.normaliseStateSchema({
@@ -278,7 +369,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     daughterSpacing: 1000,
     doubleStrandHeight: 100,
     speed: 50,
-    advanced: { transitionTightness: 1000 },
+    advanced: { terminalSmoothing: 99, transitionTightness: 1000 },
   });
   assert.equal(high.length, 400);
   assert.equal(high.progress, 100);
@@ -288,6 +379,7 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(high.daughterSpacing, 400);
   assert.equal(high.doubleStrandHeight, 56);
   assert.equal(high.speed, 5);
+  assert.equal(high.advanced.terminalSmoothing, 6);
   assert.equal(high.advanced.transitionTightness, 100);
 
   const invalid = api.normaliseStateSchema({
@@ -299,7 +391,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     daughterSpacing: "invalid",
     doubleStrandHeight: NaN,
     speed: 0,
-    advanced: { transitionTightness: "invalid" },
+    advanced: { terminalSmoothing: "invalid", transitionTightness: "invalid" },
   });
   assert.equal(invalid.length, 90);
   assert.equal(invalid.progress, 12);
@@ -309,6 +401,7 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(invalid.daughterSpacing, 152);
   assert.equal(invalid.doubleStrandHeight, 24);
   assert.equal(invalid.speed, 1);
+  assert.equal(invalid.advanced.terminalSmoothing, 1.5);
   assert.equal(invalid.advanced.transitionTightness, 0);
 
   assert.equal(api.playbackSpeed({ speed: -1 }), 1, "legacy non-positive speeds use the default");
@@ -346,16 +439,23 @@ test("maximum length and resolution stay within the bounded render-density budge
   state.forkTravel = 0.2;
   api.setState(state);
 
-  assert.equal(api.basePairCount(), 880);
-  assert.equal(api.displayedBasePairPositions().length, 881);
-  assert.equal(api.rulerTickIndices(api.rulerMajorEvery(7.25)).length, 881);
+  const lattice = api.basePairLattice();
+  assert.equal(lattice.subdivisionCount, 880);
+  assert.equal(lattice.edgeOffset, 0.5);
+  assert.equal(lattice.count, 879);
+  assert.equal(api.basePairCount(), 879);
+  assert.equal(api.displayedBasePairPositions().length, 880);
+  const labelledTicks = api.rulerTickIndices(api.rulerMajorEvery(7.25));
+  assert.ok(labelledTicks.length < 880);
+  assert.equal(labelledTicks[0], 0);
+  assert.equal(labelledTicks.at(-1), 879);
 
   const model = api.getReplicationModel();
   const pairs = api.renderBasePairs(model);
   const artwork = api.artworkMarkup(model);
   const rungCount = (pairs.match(/<line\b/g) || []).length;
   assert.ok(rungCount > 0);
-  assert.ok(rungCount <= 881 * 3, "each genomic site can render at most one parental and two daughter rungs");
+  assert.ok(rungCount <= 880 * 3, "each genomic site can render at most one parental and two daughter rungs");
   assert.doesNotMatch(artwork, /(?:NaN|Infinity)/);
 
   const halfStroke = state.weight / 2;
@@ -908,12 +1008,14 @@ test("new strand-model defaults are explicit and legacy simplified snapshots mig
   const state = freshState();
   assert.equal(state.doubleStrandHeight, 24);
   assert.equal(state.advanced.strandModel, "standard");
+  assert.equal(state.advanced.terminalSmoothing, 1.5);
   assert.equal(state.advanced.transitionTightness, 0);
   assert.equal(state.advanced.alwaysShowControls, true);
   assert.equal("simplified" in state.advanced, false);
 
   const migrated = api.normaliseStateSchema({ advanced: { simplified: true } });
   assert.equal(migrated.advanced.strandModel, "elegant");
+  assert.equal(migrated.advanced.terminalSmoothing, 1.5);
   assert.equal("simplified" in migrated.advanced, false);
 });
 
@@ -1211,6 +1313,107 @@ test("normal new-DNA endpoints use the exact profile threshold rather than a ste
   assert.ok(Math.abs(markupStart - span.fromX) < 1e-4);
 });
 
+test("terminal smoothing is measured on the parity-aware displayed base-pair lattice", () => {
+  const state = freshState();
+  state.length = 90;
+  state.pairResolution = 3;
+  state.advanced.terminalSmoothing = 1.5;
+  api.setState(state);
+
+  const defaultLattice = api.basePairLattice(state);
+  const defaultSpan = api.terminalPullSpan(0.5, "right", state);
+  assert.equal(api.terminalSmoothing(state), 1.5);
+  assert.equal(api.terminalSmoothingLabel(state), "1.5 bp");
+  assert.ok(
+    Math.abs(defaultSpan - (1.5 * api.VIEW.moleculeWidth) / defaultLattice.subdivisionCount) < 1e-12
+  );
+  const crossoverCount = defaultLattice.subdivisionCount / (state.pairResolution + 1);
+  const legacyHalfCrossoverSpan = api.VIEW.moleculeWidth / (crossoverCount * 2);
+  assert.ok(defaultSpan < legacyHalfCrossoverSpan, "the new default should begin closer than the former pull");
+  assert.ok(Math.abs(defaultSpan / legacyHalfCrossoverSpan - 0.75) < 1e-12);
+
+  state.length = 180;
+  const longerGenomeSpan = api.terminalPullSpan(0.5, "right", state);
+  assert.ok(Math.abs(longerGenomeSpan - defaultSpan / 2) < 1e-12);
+
+  state.length = 90;
+  state.pairResolution = 1;
+  const lowResolutionSpan = api.terminalPullSpan(0.5, "right", state);
+  assert.ok(Math.abs(lowResolutionSpan - defaultSpan * 2) < 1e-12);
+
+  state.pairResolution = 2;
+  const evenLattice = api.basePairLattice(state);
+  const evenSpan = api.terminalPullSpan(0.37, "right", state);
+  assert.equal(evenLattice.edgeOffset, 0.5);
+  assert.ok(
+    Math.abs((evenSpan * evenLattice.subdivisionCount) / api.VIEW.moleculeWidth - 1.5) < 1e-12,
+    "the centred half-step edge inset must not distort the configured genomic distance"
+  );
+  assert.equal(evenSpan, api.terminalPullSpan(0.37, "left", state));
+});
+
+test("zero terminal smoothing snaps at merge and chromosome-end contact", () => {
+  const state = freshState();
+  state.advanced.terminalSmoothing = 0;
+  state.origins = [
+    { id: "snap-left", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "snap-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
+  ];
+  api.setState(state);
+
+  assert.equal(api.terminalSmoothing(), 0);
+  assert.equal(api.terminalSmoothingLabel(), "Snap");
+  assert.equal(api.terminalPullSpan(0.5, "right", state), 0);
+
+  const gap = 4;
+  const beforeMergeTravel =
+    (state.origins[1].startPosition - state.origins[0].startPosition - gap / api.VIEW.moleculeWidth) / 2;
+  const beforeMerge = api.getReplicationModelAtTravel(beforeMergeTravel, state);
+  assert.equal(beforeMerge.regions.length, 2);
+  assert.equal(beforeMerge.origins[0].rightEdgeBlend, 0);
+  assert.equal(beforeMerge.origins[1].leftEdgeBlend, 0);
+
+  const atMerge = api.getReplicationModelAtTravel(0.25, state);
+  assert.equal(atMerge.regions.length, 1);
+  assert.equal(atMerge.origins[0].rightEdgeBlend, 1);
+  assert.equal(atMerge.origins[1].leftEdgeBlend, 1);
+
+  state.origins = [{ id: "snap-end", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+  const beforeEnd = api.getReplicationModelAtTravel(0.5 - gap / api.VIEW.moleculeWidth, state);
+  assert.equal(beforeEnd.origins[0].rightEdgeBlend, 0);
+  assert.equal(beforeEnd.regions[0].openEnd, false);
+
+  const atEnd = api.getReplicationModelAtTravel(0.5, state);
+  assert.equal(atEnd.origins[0].rightEdgeBlend, 1);
+  assert.equal(atEnd.regions[0].openEnd, true);
+});
+
+test("nonzero terminal smoothing eases opposing forks symmetrically over the configured distance", () => {
+  const state = freshState();
+  state.advanced.terminalSmoothing = 1.5;
+  state.origins = [
+    { id: "ease-left", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "ease-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
+  ];
+  api.setState(state);
+
+  const span = api.terminalPullSpan(0.5, "right", state);
+  const travelForGap = (gapInPixels) =>
+    (state.origins[1].startPosition - state.origins[0].startPosition - gapInPixels / api.VIEW.moleculeWidth) / 2;
+  const atPullStart = api.getReplicationModelAtTravel(travelForGap(span * 2), state);
+  const halfway = api.getReplicationModelAtTravel(travelForGap(span), state);
+
+  assert.ok(atPullStart.origins[0].rightEdgeBlend < 1e-12);
+  assert.ok(Math.abs(halfway.origins[0].rightEdgeBlend - 0.5) < 1e-12);
+  assert.equal(halfway.origins[0].rightEdgeBlend, halfway.origins[1].leftEdgeBlend);
+
+  state.origins = [{ id: "ease-end", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+  const endAtPullStart = api.getReplicationModelAtTravel(0.5 - span / api.VIEW.moleculeWidth, state);
+  const endHalfway = api.getReplicationModelAtTravel(0.5 - span / 2 / api.VIEW.moleculeWidth, state);
+  assert.ok(endAtPullStart.origins[0].rightEdgeBlend < 1e-12);
+  assert.ok(Math.abs(endHalfway.origins[0].rightEdgeBlend - 0.5) < 1e-12);
+});
+
 test("daughter profiles blend continuously before fork merges and chromosome ends", () => {
   const state = freshState();
   state.origins = [
@@ -1315,10 +1518,15 @@ test("rendered fork geometry ignores a distant bubble until the facing terminal 
   // Once the opposing forks enter their shared pull span, their facing blends
   // explicitly signal that transition geometry may be coordinated.
   state.advanced.strandModel = "minimal";
+  const pullSpan = api.terminalPullSpan(0.5, "right", state);
+  const observedRightPosition =
+    state.origins[0].startPosition + Math.max(0, state.forkTravel + state.origins[0].rightOffset);
+  const nearbyLeftTravel = Math.max(0, state.forkTravel);
+  const nearbyStartPosition = observedRightPosition + pullSpan / api.VIEW.moleculeWidth + nearbyLeftTravel;
   state.origins[1] = {
     id: "nearby",
-    position: 0.48,
-    startPosition: 0.48,
+    position: nearbyStartPosition,
+    startPosition: nearbyStartPosition,
     leftOffset: 0,
     rightOffset: -0.04,
   };
@@ -1694,7 +1902,7 @@ test("circular transition is a quarter-circle on each side of the replication en
   );
 });
 
-test("final fork pulls run continuously from the last crossover through merges and chromosome ends", () => {
+test("final fork pulls run continuously across the configured merge and chromosome-end distance", () => {
   const state = freshState();
   state.advanced.strandModel = "elegant";
   state.origins = [{ id: "end", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
@@ -1703,15 +1911,15 @@ test("final fork pulls run continuously from the last crossover through merges a
   const endSpan = api.terminalPullSpan(1, "right", state);
   state.advanced.transitionTightness = 100;
   assert.equal(api.terminalPullSpan(1, "right", state), endSpan, "terminal pull must stay smooth at Sharp tightness");
-  const travelAtLastCrossover = 0.5 - endSpan / api.VIEW.moleculeWidth;
-  const atLastCrossover = api.getReplicationModelAtTravel(travelAtLastCrossover, state);
+  const travelAtPullStart = 0.5 - endSpan / api.VIEW.moleculeWidth;
+  const atPullStart = api.getReplicationModelAtTravel(travelAtPullStart, state);
   const halfwayToEnd = api.getReplicationModelAtTravel(
-    travelAtLastCrossover + endSpan / api.VIEW.moleculeWidth / 2,
+    travelAtPullStart + endSpan / api.VIEW.moleculeWidth / 2,
     state
   );
   const atEnd = api.getReplicationModelAtTravel(0.5, state);
   const endBlends = [
-    atLastCrossover.origins[0].rightEdgeBlend,
+    atPullStart.origins[0].rightEdgeBlend,
     halfwayToEnd.origins[0].rightEdgeBlend,
     atEnd.origins[0].rightEdgeBlend,
   ];
@@ -1720,7 +1928,7 @@ test("final fork pulls run continuously from the last crossover through merges a
   assert.ok(Math.abs(endBlends[2] - 1) < 1e-8);
   assert.ok(
     Math.abs(
-      (halfwayToEnd.origins[0].rightPosition - atLastCrossover.origins[0].rightPosition) -
+      (halfwayToEnd.origins[0].rightPosition - atPullStart.origins[0].rightPosition) -
         (atEnd.origins[0].rightPosition - halfwayToEnd.origins[0].rightPosition)
     ) < 1e-8,
     "fork endpoint must keep moving at the replication rate during its final pull"
@@ -1732,10 +1940,10 @@ test("final fork pulls run continuously from the last crossover through merges a
   ];
   const meetingPoint = 0.5;
   const mergeSpan = api.terminalPullSpan(meetingPoint, "right", state);
-  const travelAtMergeCrossover = meetingPoint - mergeSpan / api.VIEW.moleculeWidth - state.origins[0].startPosition;
-  const beforeMerge = api.getReplicationModelAtTravel(travelAtMergeCrossover, state);
+  const travelAtMergePullStart = meetingPoint - mergeSpan / api.VIEW.moleculeWidth - state.origins[0].startPosition;
+  const beforeMerge = api.getReplicationModelAtTravel(travelAtMergePullStart, state);
   const duringMerge = api.getReplicationModelAtTravel(
-    travelAtMergeCrossover + mergeSpan / api.VIEW.moleculeWidth / 2,
+    travelAtMergePullStart + mergeSpan / api.VIEW.moleculeWidth / 2,
     state
   );
   const merged = api.getReplicationModelAtTravel(0.25, state);
@@ -2065,6 +2273,7 @@ test("advanced canvas controls and permanent hover controls are wired", () => {
   assert.match(html, /id="backgroundColorControl"[^>]*type="color"/);
   assert.match(html, /id="alwaysShowControlsToggle"[^>]*type="checkbox"[^>]*checked/);
   assert.match(html, /id="transitionTightnessControl"[^>]*min="-100"[^>]*max="100"/);
+  assert.match(html, /id="terminalSmoothingControl"[^>]*min="0"[^>]*max="6"[^>]*step="0\.25"/);
   assert.doesNotMatch(html, /id="originsToggle"/);
   assert.doesNotMatch(html, /id="simplifiedToggle"/);
   assert.doesNotMatch(source, /elements\.simplifiedToggle/);
@@ -2085,6 +2294,7 @@ test("all range controls expose the expanded safe contracts and correct initial 
     daughterSpacingControl: ["64", "400", "4"],
     doubleStrandHeightControl: ["8", "56", "2"],
     transitionTightnessControl: ["-100", "100", "1"],
+    terminalSmoothingControl: ["0", "6", "0.25"],
   };
 
   for (const [id, [minimum, maximum, step]] of Object.entries(contracts)) {
@@ -2098,13 +2308,18 @@ test("all range controls expose the expanded safe contracts and correct initial 
   assert.match(html, /id="lengthOutput"[^>]*>72 bp</);
   assert.match(html, /id="lengthStat"[^>]*>72 bp</);
   assert.match(html, /id="pairResolutionOutput"[^>]*>3 between crossovers</);
+  assert.match(html, /id="terminalSmoothingOutput"[^>]*>1\.5 bp</);
   assert.match(html, /<section class="rs-control-section rs-compact-section">[\s\S]*?<h2>Controls<\/h2>/);
 });
 
-test("ruler derives minor ticks from the shared genomic sampling lattice", () => {
+test("ruler shows only labelled ticks from the shared genomic sampling lattice", () => {
   assert.match(source, /Genomic position \(bp\)/);
-  assert.match(source, /return displayedBasePairPositions\(sourceState\)/);
-  assert.match(source, /crossoverCount\(sourceState\) \* \(basePairResolution\(sourceState\) \+ 1\)/);
+  assert.match(source, /function rulerTickIndices\(majorEvery/);
+  assert.match(source, /<output>\$\{label\}<\/output>/);
+  assert.doesNotMatch(source, /labelled \? `<output>/);
+  assert.match(source, /function basePairLattice\(/);
+  assert.match(source, /function basePairFraction\(/);
+  assert.match(source, /function genomicPositionAtFraction\(/);
   assert.match(source, /between crossovers/);
   assert.match(html, /id="pairResolutionOutput"/);
   assert.match(html, /<span>Genomic length<\/span>[\s\S]*id="lengthOutput"/);
@@ -2121,6 +2336,14 @@ test("ruler axis continues across the viewport without extending genomic ticks",
   assert.match(source, /<span class="rs-ruler-axis"><\/span>/);
   assert.doesNotMatch(source, /class="rs-ruler-axis" style=/);
   assert.match(css, /\.rs-ruler-axis\s*\{[^}]*right:\s*0;[^}]*left:\s*0;/s);
+});
+
+test("header exposes compact project resources and version metadata", () => {
+  assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliSketch"/);
+  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch#readme"[\s\S]*aria-label="Documentation"/);
+  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
+  assert.match(html, /class="rs-project-version">v1\.0\.0<\/span>/);
+  assert.match(css, /\.rs-project-version\s*\{[^}]*color:\s*#3c9ab7/s);
 });
 
 test("moving replication details cross-fade instead of popping", () => {
@@ -2189,8 +2412,11 @@ test("stable base-pair rungs remain rendered when duplex height exceeds one thir
     const lines = [...markup.matchAll(/<line x1="([\d.-]+)" y1="([\d.-]+)" x2="[\d.-]+" y2="([\d.-]+)"/g)].map(
       (match) => ({ x: Number(match[1]), length: Math.abs(Number(match[3]) - Number(match[2])) })
     );
-    const unreplicatedRungs = lines.filter((line) => Math.abs(line.x - api.VIEW.x0) < 0.01);
-    const replicatedRungs = lines.filter((line) => Math.abs(line.x - api.VIEW.width / 2) < 0.01);
+    const firstRungX = api.VIEW.x0 + api.basePairFraction(0) * api.VIEW.moleculeWidth;
+    const middleRungIndex = api.genomicPositionAtFraction(0.5);
+    const middleRungX = api.VIEW.x0 + api.basePairFraction(middleRungIndex) * api.VIEW.moleculeWidth;
+    const unreplicatedRungs = lines.filter((line) => Math.abs(line.x - firstRungX) < 0.06);
+    const replicatedRungs = lines.filter((line) => Math.abs(line.x - middleRungX) < 0.06);
 
     assert.equal(unreplicatedRungs.length, 1, `${modelName} stable parental rung must remain visible`);
     assert.equal(replicatedRungs.length, 2, `${modelName} stable daughter rungs must remain visible`);
@@ -2253,7 +2479,7 @@ test("parental base-pair rungs fade at the fork instead of fanning into a bubble
   );
   const lingeringParentalSamples = api
     .displayedBasePairPositions()
-    .map((index) => api.VIEW.x0 + (index / api.basePairCount()) * api.VIEW.moleculeWidth)
+    .map((index) => api.VIEW.x0 + api.basePairFraction(index) * api.VIEW.moleculeWidth)
     .filter((x) => {
       const replication = api.replicationAt(x, model);
       return replication.region && replication.profile >= 0.12 && replication.profile < 0.38;
