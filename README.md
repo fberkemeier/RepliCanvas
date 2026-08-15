@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/img/replisketch_logo.png" alt="RepliSketch logo" width="150" />
+  <img src="assets/img/logo1.png" alt="RepliSketch logo" width="150" />
 </p>
 
 <h1 align="center">RepliSketch</h1>
