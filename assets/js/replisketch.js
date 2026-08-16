@@ -17,26 +17,40 @@
   const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
   const HEX_COLOUR = /^#[\da-f]{6}$/i;
   const BASE_PAIRS_PER_TURN = 10;
+  const BASE_PLAYBACK_SPEED = 2.75;
+  const SPEED_MULTIPLIER_RANGE = Object.freeze({ min: 0.25, max: 3 });
   const CONTROL_RANGES = Object.freeze({
     progress: { min: 0, max: 100 },
-    speed: { min: 0.25, max: 5 },
+    speed: {
+      min: BASE_PLAYBACK_SPEED * SPEED_MULTIPLIER_RANGE.min,
+      max: BASE_PLAYBACK_SPEED * SPEED_MULTIPLIER_RANGE.max,
+    },
     length: { min: 10, max: 1250 },
     pairResolution: { min: 1, max: 10 },
-    basePairWidth: { min: 0.2, max: 7 },
-    weight: { min: 1, max: 8 },
+    basePairWidth: { min: 0.2, max: 16 },
+    weight: { min: 1, max: 20 },
     daughterSpacing: { min: 64, max: 400 },
     doubleStrandHeight: { min: 8, max: 56 },
     transitionTightness: { min: -100, max: 100 },
     terminalSmoothing: { min: 0, max: 6 },
     newDnaStartDistance: { min: 0, max: 20 },
     strandPhaseShift: { min: -5, max: 5 },
-    aspectX: { min: 0.5, max: 2 },
+    aspectX: { min: 0.1, max: 10 },
     aspectY: { min: 0.5, max: 2 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
   const MAX_BASE_PAIR_COUNT = 500;
   const GRID_COLUMN_COUNT = 12;
   const BASE_PAIR_COLOR_MODES = new Set(["single", "strand", "bases"]);
+  const BASE_PAIR_TRANSITION_MODES = new Set(["fade", "grow"]);
+  const BASE_PAIR_VARIANTS = Object.freeze([
+    Object.freeze(["A", "T"]),
+    Object.freeze(["T", "A"]),
+    Object.freeze(["G", "C"]),
+    Object.freeze(["C", "G"]),
+  ]);
+  const BASE_PAIR_VARIATION_BLOCK_SIZE = 8;
+  const CROSSOVER_REFERENCE_LENGTH = 50;
   const MAX_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.max;
   const NASCENT_PROFILE_THRESHOLD = 0.38;
   const PARENTAL_PAIR_FADE_END = 0.12;
@@ -54,26 +68,45 @@
   const SCHEMATIC_NASCENT_MIN_GAP_PX = 6;
   const SCHEMATIC_NASCENT_CONNECTION_PX = 12;
   const CUT_DRAG_THRESHOLD_PX = 4;
+  const PAN_DRAG_THRESHOLD_PX = 4;
+  const ASPECT_SLIDER_LIMIT = 100;
   const VIDEO_FRAME_RATE = 60;
   const VIDEO_BITS_PER_SECOND = 5_000_000;
   const PROGRESS_PER_MILLISECOND = 0.006;
   // Match the former default four-fork pace, then keep that world-space speed
   // constant as forks merge or reach chromosome ends.
   const FORK_TRAVEL_PER_MILLISECOND = PROGRESS_PER_MILLISECOND / 400;
+  const DEFAULT_ORIGIN_OFFSET = 0;
+  const DEFAULT_ORIGINS = Object.freeze([
+    Object.freeze({
+      id: "origin-6",
+      position: 0.3,
+      startPosition: 0.3,
+      leftOffset: DEFAULT_ORIGIN_OFFSET,
+      rightOffset: DEFAULT_ORIGIN_OFFSET,
+    }),
+    Object.freeze({
+      id: "origin-5",
+      position: 0.7,
+      startPosition: 0.7,
+      leftOffset: DEFAULT_ORIGIN_OFFSET,
+      rightOffset: DEFAULT_ORIGIN_OFFSET,
+    }),
+  ]);
 
   const DEFAULTS = {
-    length: 90,
-    progress: 12,
+    length: 50,
+    progress: 0,
     forkTravel: 0,
     pairResolution: 3,
-    basePairWidth: 1.8,
-    weight: 4,
-    doubleStrandHeight: 24,
-    daughterSpacing: 152,
-    speed: 1,
+    basePairWidth: 5,
+    weight: 6,
+    doubleStrandHeight: 46,
+    daughterSpacing: 160,
+    speed: BASE_PLAYBACK_SPEED,
     discreteAnimation: false,
     basePairColorMode: "single",
-    basePairSeed: 0x51f15e,
+    basePairSeed: 3815474507,
     colors: {
       templateA: "#067e94",
       templateB: "#022851",
@@ -97,6 +130,7 @@
       grid: true,
       alwaysShowControls: true,
       snapToBasePairs: false,
+      basePairTransition: "fade",
       includeExportBackground: false,
       newDnaStartDistance: 0,
       strandPhaseShift: 0,
@@ -119,8 +153,9 @@
   let pendingControlSnapshot = null;
   let viewState = { zoom: 1, panX: 0, panY: 0 };
   let hoverState = null;
-  let modifierState = { shift: false, pan: false };
+  let modifierState = { shift: false, special: false };
   let themeMode = "system";
+  let artworkStrokeScale = 1;
   const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
@@ -139,6 +174,25 @@
       DEFAULTS.speed
     );
   };
+  const speedMultiplier = (sourceState = state) =>
+    clamp(
+      playbackSpeed(sourceState) / BASE_PLAYBACK_SPEED,
+      SPEED_MULTIPLIER_RANGE.min,
+      SPEED_MULTIPLIER_RANGE.max
+    );
+  const playbackSpeedFromMultiplier = (value) => {
+    const configured = Number(value);
+    const multiplier = clamp(
+      Number.isFinite(configured) ? configured : 1,
+      SPEED_MULTIPLIER_RANGE.min,
+      SPEED_MULTIPLIER_RANGE.max
+    );
+    return boundedControlValue("speed", multiplier * BASE_PLAYBACK_SPEED, DEFAULTS.speed);
+  };
+  const speedMultiplierLabel = (sourceState = state) => {
+    const value = speedMultiplier(sourceState);
+    return `${Number(value.toFixed(2))}x`;
+  };
   const fixed = (value) => Number(value).toFixed(1);
   const precise = (value) => Number(value).toFixed(4);
   const fixedUiTransform = (x, y) => {
@@ -154,6 +208,32 @@
     return t * t * (3 - 2 * t);
   };
 
+  function withArtworkStrokeScale(scale, callback) {
+    const previous = artworkStrokeScale;
+    artworkStrokeScale = Math.max(EPSILON, Number(scale) || 1);
+    try {
+      return callback();
+    } finally {
+      artworkStrokeScale = previous;
+    }
+  }
+
+  function artworkStrokeAttributes(width) {
+    const baseWidth = Math.max(0, Number(width) || 0);
+    return `stroke-width="${fixed(baseWidth * artworkStrokeScale)}" data-rs-stroke-width="${fixed(
+      baseWidth
+    )}" vector-effect="non-scaling-stroke"`;
+  }
+
+  function normaliseExportStrokeWidths(root) {
+    root?.querySelectorAll?.("[data-rs-stroke-width]").forEach((element) => {
+      const width = element.getAttribute("data-rs-stroke-width");
+      if (width !== null) element.setAttribute("stroke-width", width);
+      element.removeAttribute("data-rs-stroke-width");
+    });
+    return root;
+  }
+
   function randomBasePairSeed() {
     try {
       const values = new Uint32Array(1);
@@ -163,6 +243,54 @@
       // Restricted contexts can fall back to the local pseudorandom generator.
     }
     return Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+  }
+
+
+  function reseedBasePairSequence(sourceState = state, seed = randomBasePairSeed()) {
+    if (!sourceState || typeof sourceState !== "object") return 0;
+    const current = Math.trunc(Number(sourceState.basePairSeed) || 0) >>> 0;
+    let next = Math.trunc(Number(seed) || 0) >>> 0;
+    if (next === current) next = (current + 0x9e3779b9) >>> 0;
+    sourceState.basePairSeed = next;
+    return next;
+  }
+
+  function invertHexColour(colour) {
+    const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(String(colour || ""));
+    if (!match) return colour;
+    const inverted = match
+      .slice(1)
+      .map((channel) => (255 - Number.parseInt(channel, 16)).toString(16).padStart(2, "0"))
+      .join("");
+    return `#${inverted}`;
+  }
+
+  function darkArtworkEnabled() {
+    return resolvedTheme(themeMode) === "dark";
+  }
+
+  // User-selected molecular colours are literal artwork settings and remain
+  // unchanged across interface themes. Dark mode only adapts the surrounding
+  // canvas, labels, grid, and application chrome.
+  function artworkColour(colour) {
+    return colour;
+  }
+
+  function stateArtworkColour(key, sourceState = state) {
+    return sourceState?.colors?.[key] ?? DEFAULTS.colors[key];
+  }
+
+  function canvasBackgroundColor(sourceState = state) {
+    const colour = sourceState?.advanced?.backgroundColor || DEFAULTS.advanced.backgroundColor;
+    return darkArtworkEnabled() ? invertHexColour(colour) : colour;
+  }
+
+  function backgroundControlColor(sourceState = state) {
+    return canvasBackgroundColor(sourceState);
+  }
+
+  function configuredBackgroundColor(displayedColour) {
+    return darkArtworkEnabled() ? invertHexColour(displayedColour) : displayedColour;
   }
 
   function strandModel(sourceState = state) {
@@ -200,7 +328,9 @@
 
   function terminalSmoothingLabel(sourceState = state) {
     const value = terminalSmoothing(sourceState);
-    return value <= EPSILON ? "Snap" : `${Number(value.toFixed(2))} bp`;
+    if (value <= EPSILON) return "Snap";
+    const effectiveBasePairs = effectiveTerminalSmoothing(sourceState);
+    return `${Number(effectiveBasePairs.toFixed(2))} bp`;
   }
 
   function transitionProfile(value, sourceState = state) {
@@ -259,6 +389,13 @@
     return BASE_PAIR_COLOR_MODES.has(configured) ? configured : DEFAULTS.basePairColorMode;
   }
 
+  function basePairTransitionMode(sourceState = state) {
+    const configured = sourceState?.advanced?.basePairTransition;
+    return BASE_PAIR_TRANSITION_MODES.has(configured)
+      ? configured
+      : DEFAULTS.advanced.basePairTransition;
+  }
+
   function newDnaStartDistance(sourceState = state) {
     return boundedControlValue(
       "newDnaStartDistance",
@@ -292,6 +429,44 @@
 
   function artworkAspectY(sourceState = state) {
     return boundedControlValue("aspectY", sourceState?.advanced?.aspectY, DEFAULTS.advanced.aspectY);
+  }
+
+  function aspectKey(axis) {
+    return axis === "y" ? "aspectY" : "aspectX";
+  }
+
+  function aspectSliderValue(axis, sourceState = state) {
+    const key = aspectKey(axis);
+    const factor = key === "aspectY" ? artworkAspectY(sourceState) : artworkAspectX(sourceState);
+    const range = CONTROL_RANGES[key];
+    if (Math.abs(factor - 1) <= EPSILON) return 0;
+    if (factor > 1) {
+      return clamp(
+        (Math.log(factor) / Math.log(range.max)) * ASPECT_SLIDER_LIMIT,
+        0,
+        ASPECT_SLIDER_LIMIT
+      );
+    }
+    return clamp(
+      -(Math.log(factor) / Math.log(range.min)) * ASPECT_SLIDER_LIMIT,
+      -ASPECT_SLIDER_LIMIT,
+      0
+    );
+  }
+
+  function aspectFactorFromSlider(axis, sliderValue) {
+    const key = aspectKey(axis);
+    const range = CONTROL_RANGES[key];
+    const configured = Number(sliderValue);
+    const value = clamp(
+      Number.isFinite(configured) ? configured : 0,
+      -ASPECT_SLIDER_LIMIT,
+      ASPECT_SLIDER_LIMIT
+    );
+    const factor = value >= 0
+      ? range.max ** (value / ASPECT_SLIDER_LIMIT)
+      : range.min ** (-value / ASPECT_SLIDER_LIMIT);
+    return boundedControlValue(key, factor, DEFAULTS.advanced[key]);
   }
 
   function artworkAspectTransform(sourceState = state) {
@@ -333,6 +508,7 @@
     sourceState.advanced.grid = sourceState.advanced.grid !== false;
     sourceState.advanced.alwaysShowControls = sourceState.advanced.alwaysShowControls !== false;
     sourceState.advanced.snapToBasePairs = sourceState.advanced.snapToBasePairs === true;
+    sourceState.advanced.basePairTransition = basePairTransitionMode(sourceState);
     sourceState.advanced.includeExportBackground = sourceState.advanced.includeExportBackground === true;
     sourceState.discreteAnimation = sourceState.discreteAnimation === true;
     sourceState.pairResolution = basePairResolution(sourceState);
@@ -394,6 +570,9 @@
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         if (key === "basePairColorMode" && !BASE_PAIR_COLOR_MODES.has(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        if (key === "basePairTransition" && !BASE_PAIR_TRANSITION_MODES.has(value)) {
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         result[key] = value;
@@ -516,8 +695,7 @@
   }
 
   function backgroundLuminance(sourceState = state) {
-    const fallback = DEFAULTS.advanced.backgroundColor;
-    const hex = sourceState?.advanced?.backgroundColor || fallback;
+    const hex = canvasBackgroundColor(sourceState);
     const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
     if (!match) return 1;
     const linear = match.slice(1).map((channel) => {
@@ -559,11 +737,36 @@
     return (lower + upper) / 2;
   };
 
+  function latticeSpanFraction(basePairSpan, sourceState = state) {
+    const configuredSpan = Number(basePairSpan);
+    const span = Number.isFinite(configuredSpan) ? Math.max(0, configuredSpan) : 0;
+    return span / Math.max(1, basePairLattice(sourceState).subdivisionCount);
+  }
+
+  function referenceBasePairSubdivisionCount() {
+    const referenceCrossoverCount = Math.max(
+      1,
+      Math.round((CROSSOVER_REFERENCE_LENGTH / BASE_PAIRS_PER_TURN) * 2)
+    );
+    return referenceCrossoverCount * (DEFAULTS.pairResolution + 1);
+  }
+
+  function referenceBasePairSpacingPx() {
+    return VIEW.moleculeWidth / referenceBasePairSubdivisionCount();
+  }
+
   function terminalPullSpan(terminalPosition, direction, sourceState = state) {
-    // Express the transition reach in displayed genomic units. The shared
-    // lattice spacing keeps it coherent with length/resolution changes, while
-    // using one span for both facing forks preserves exact merge symmetry.
-    return (terminalSmoothing(sourceState) * VIEW.moleculeWidth) / basePairLattice(sourceState).subdivisionCount;
+    // Preserve the default 40-rung molecule's visual smoothing distance, then
+    // keep that distance stable as genomic length or rung density changes. At
+    // higher genomic density the same on-screen fork transition therefore
+    // spans more base-pair sites instead of collapsing into an abrupt kink.
+    return terminalSmoothing(sourceState) * referenceBasePairSpacingPx();
+  }
+
+  function effectiveTerminalSmoothing(sourceState = state) {
+    const currentPairSpacingPx =
+      VIEW.moleculeWidth / Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    return terminalPullSpan(0.5, "right", sourceState) / currentPairSpacingPx;
   }
 
   function terminalEdgeBlend(distance, pullSpan = FORK_TERMINAL_BLEND_PX) {
@@ -573,9 +776,43 @@
     return 1 - smoothstep(distance / Math.max(EPSILON, pullSpan));
   }
   const daughterDetailFade = (profile) => smoothstep((profile - NASCENT_PROFILE_THRESHOLD) / 0.18);
-  // Parental pairs should visually end at the fork. Keep only a very short
-  // fade across the edge so a rung on the sampling lattice cannot pop.
+  // Retained for configuration/test compatibility. Parental rungs are now
+  // faded on the unreplicated side of a fork and removed immediately once the
+  // fork crosses their genomic position.
   const parentalPairFade = (profile) => 1 - smoothstep(profile / PARENTAL_PAIR_FADE_END);
+
+  function parentalPairApproachFade(x, model, sourceState = state) {
+    if (!model?.regions?.length) return 1;
+    const position = (x - VIEW.x0) / VIEW.moleculeWidth;
+    if (
+      model.regions.some(
+        (region) => position >= region.start - EPSILON && position <= region.end + EPSILON
+      )
+    ) {
+      return 0;
+    }
+
+    let nearestForkDistance = Infinity;
+    model.regions.forEach((region) => {
+      if (!region.openStart && position < region.start) {
+        nearestForkDistance = Math.min(
+          nearestForkDistance,
+          (region.start - position) * VIEW.moleculeWidth
+        );
+      }
+      if (!region.openEnd && position > region.end) {
+        nearestForkDistance = Math.min(
+          nearestForkDistance,
+          (position - region.end) * VIEW.moleculeWidth
+        );
+      }
+    });
+    if (!Number.isFinite(nearestForkDistance)) return 1;
+
+    const pairSpacing = VIEW.moleculeWidth / Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    const fadeDistance = clamp(pairSpacing * 2, 18, 52);
+    return smoothstep(nearestForkDistance / fadeDistance);
+  }
 
   function basePairDistanceFade(firstY, secondY, sourceState = state) {
     // Physical component of the fork-local distance gate. Stable duplexes can
@@ -668,20 +905,19 @@
   }
 
   function makeDefaultState() {
-    const defaultState = normaliseStateSchema({
+    const origins = DEFAULT_ORIGINS.map((origin) => ({ ...origin }));
+    return normaliseStateSchema({
       ...DEFAULTS,
-      basePairSeed: randomBasePairSeed(),
+      basePairSeed: DEFAULTS.basePairSeed,
       colors: { ...DEFAULTS.colors },
       layers: { ...DEFAULTS.layers },
       advanced: { ...DEFAULTS.advanced },
-      origins: makeOrigins(2),
+      origins,
       cuts: [],
-      selectedOriginId: null,
+      selectedOriginId: DEFAULT_ORIGINS[0].id,
       selectedFork: null,
       playing: false,
     });
-    defaultState.forkTravel = findForkTravelForReplicatedFraction(defaultState.progress, defaultState);
-    return defaultState;
   }
 
   function serializableState() {
@@ -1219,7 +1455,21 @@
   }
 
   function crossoverClipHalfWidth(multiplier = 1.15, minimum = 3.5, sourceState = state) {
-    return Math.max(minimum, sourceState.weight * multiplier) / Math.max(EPSILON, artworkAspectX(sourceState));
+    const aspect = Math.max(EPSILON, artworkAspectX(sourceState));
+    const configuredLength = Math.max(
+      CONTROL_RANGES.length.min,
+      Number(sourceState?.length) || DEFAULTS.length
+    );
+    const lengthScale = CROSSOVER_REFERENCE_LENGTH / configuredLength;
+    const nominalScreenHalfWidth = Math.max(minimum, sourceState.weight * multiplier) * lengthScale;
+    const crossoverSpacingScreen = (VIEW.moleculeWidth / crossoverCount(sourceState)) * aspect;
+    const spacingLimitedHalfWidth = crossoverSpacingScreen * 0.42;
+    const strandSafeHalfWidth = sourceState.weight / 2 + 0.5;
+    const screenHalfWidth = Math.max(
+      strandSafeHalfWidth,
+      Math.min(nominalScreenHalfWidth, spacingLimitedHalfWidth)
+    );
+    return screenHalfWidth / aspect;
   }
 
   function crossoverNear(x, sourceState = state) {
@@ -1526,6 +1776,20 @@
     };
   }
 
+  function cutInteractionFraction(fraction, sourceState = state) {
+    const configured = Number(fraction);
+    const continuous = clamp(Number.isFinite(configured) ? configured : 0, 0, 1);
+    if (!snapEditingEnabled(sourceState)) return continuous;
+    return snapFractionToBasePair(continuous, sourceState) ?? continuous;
+  }
+
+  function cutInteractionRange(start, end, sourceState = state) {
+    return cutRange({
+      start: cutInteractionFraction(start, sourceState),
+      end: cutInteractionFraction(end, sourceState),
+    });
+  }
+
   function normaliseCutRegions(cuts) {
     const ranges = cuts.map(cutRange).sort((first, second) => first.start - second.start);
     const merged = [];
@@ -1537,12 +1801,48 @@
     return merged;
   }
 
+  function subtractCutRange(cuts, repairedRange) {
+    const repair = cutRange(repairedRange);
+    return normaliseCutRegions(
+      cuts.flatMap((cut) => {
+        const range = cutRange(cut);
+        if (repair.end < range.start - EPSILON || repair.start > range.end + EPSILON) {
+          return [range];
+        }
+        const remaining = [];
+        if (repair.start > range.start + EPSILON) {
+          remaining.push({ start: range.start, end: Math.min(range.end, repair.start) });
+        }
+        if (repair.end < range.end - EPSILON) {
+          remaining.push({ start: Math.max(range.start, repair.end), end: range.end });
+        }
+        return remaining;
+      })
+    );
+  }
+
+  function cutIndexAtFraction(fraction, sourceState = state, tolerancePx = 24) {
+    const position = clamp(Number(fraction) || 0, 0, 1);
+    const tolerance = Math.max(0, Number(tolerancePx) || 0) / VIEW.moleculeWidth;
+    return (sourceState?.cuts || []).findIndex((cut) => {
+      const range = cutRange(cut);
+      return position >= range.start - tolerance && position <= range.end + tolerance;
+    });
+  }
+
   function previewCutRange() {
     if (dragState?.role !== "cut-range" || !dragState.moved) return null;
     return cutRange({ start: dragState.anchor, end: dragState.current });
   }
 
+  function previewRepairRange() {
+    if (dragState?.role !== "repair-range" || !dragState.moved) return null;
+    return cutRange({ start: dragState.anchor, end: dragState.current });
+  }
+
   function activeCutRanges() {
+    const repair = previewRepairRange();
+    if (repair) return subtractCutRange(state.cuts, repair);
     const preview = previewCutRange();
     return preview ? normaliseCutRegions([...state.cuts, preview]) : state.cuts.map(cutRange);
   }
@@ -1687,9 +1987,10 @@
 
   function insetBasePairSegment(firstY, secondY, width = state.basePairWidth) {
     const distance = Math.abs(secondY - firstY);
-    if (distance <= width + EPSILON) return null;
+    const aspectY = Math.max(EPSILON, artworkAspectY());
+    const inset = width / (2 * aspectY);
+    if (distance <= inset * 2 + EPSILON) return null;
     const direction = Math.sign(secondY - firstY);
-    const inset = width / 2;
     return {
       firstY: firstY + direction * inset,
       secondY: secondY - direction * inset,
@@ -1697,7 +1998,15 @@
   }
 
   function mixedBasePairValue(index, sourceState = state) {
-    let value = (Math.trunc(Number(index) || 0) + 1 + (sourceState.basePairSeed >>> 0)) >>> 0;
+    const position = Math.trunc(Number(index) || 0) + 1;
+    const lengthKey = Math.round((Number(sourceState?.length) || DEFAULTS.length) * 100);
+    const resolutionKey = basePairResolution(sourceState);
+    let value = (
+      (sourceState.basePairSeed >>> 0) ^
+      Math.imul(position, 0x9e3779b1) ^
+      Math.imul(lengthKey, 0x85ebca6b) ^
+      Math.imul(resolutionKey, 0xc2b2ae35)
+    ) >>> 0;
     value ^= value >>> 16;
     value = Math.imul(value, 0x7feb352d) >>> 0;
     value ^= value >>> 15;
@@ -1707,21 +2016,34 @@
   }
 
   function basePairIdentity(index, sourceState = state) {
-    const value = mixedBasePairValue(index, sourceState);
-    const pair = value & 1 ? ["G", "C"] : ["A", "T"];
-    if ((value >>> 1) & 1) pair.reverse();
+    const position = Math.max(0, Math.trunc(Number(index) || 0));
+    const block = Math.floor(position / BASE_PAIR_VARIATION_BLOCK_SIZE);
+    const offset = position % BASE_PAIR_VARIATION_BLOCK_SIZE;
+    const shuffled = Array.from(
+      { length: BASE_PAIR_VARIATION_BLOCK_SIZE },
+      (_, itemIndex) => itemIndex % BASE_PAIR_VARIANTS.length
+    );
+    for (let itemIndex = shuffled.length - 1; itemIndex > 0; itemIndex -= 1) {
+      const randomValue = mixedBasePairValue(
+        block * BASE_PAIR_VARIATION_BLOCK_SIZE + itemIndex,
+        sourceState
+      );
+      const swapIndex = randomValue % (itemIndex + 1);
+      [shuffled[itemIndex], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[itemIndex]];
+    }
+    const pair = BASE_PAIR_VARIANTS[shuffled[offset]];
     return { first: pair[0], second: pair[1], label: `${pair[0]}-${pair[1]}` };
   }
 
   function nucleotideColor(base, sourceState = state) {
     const keys = { A: "adenine", T: "thymine", G: "guanine", C: "cytosine" };
-    return sourceState.colors[keys[base]] || sourceState.colors.basePair;
+    return stateArtworkColour(keys[base] || "basePair", sourceState);
   }
 
   function connectedStrandColor(role, sourceState = state) {
-    if (role === "a") return sourceState.colors.templateA;
-    if (role === "b") return sourceState.colors.templateB;
-    return sourceState.colors.newDna;
+    if (role === "a") return stateArtworkColour("templateA", sourceState);
+    if (role === "b") return stateArtworkColour("templateB", sourceState);
+    return stateArtworkColour("newDna", sourceState);
   }
 
   function basePairLineColors(firstRole, secondRole, firstBase, secondBase, sourceState = state) {
@@ -1732,40 +2054,65 @@
     if (mode === "bases") {
       return [nucleotideColor(firstBase, sourceState), nucleotideColor(secondBase, sourceState)];
     }
-    return [sourceState.colors.basePair, sourceState.colors.basePair];
+    const colour = stateArtworkColour("basePair", sourceState);
+    return [colour, colour];
   }
 
   function renderBasePairLine(
     x,
     firstY,
     secondY,
-    opacity,
+    visibility,
     { firstRole = "a", secondRole = "b", firstBase = "A", secondBase = "T" } = {}
   ) {
     const segment = insetBasePairSegment(firstY, secondY);
     if (!segment) return "";
+    const transition = clamp(Number(visibility) || 0, 0, 1);
+    if (transition <= EPSILON) return "";
+    const grows = basePairTransitionMode() === "grow";
+    const pairOpacity = grows ? 1 : transition;
+    const growth = grows ? transition : 1;
     const [firstColor, secondColor] = basePairLineColors(
       firstRole,
       secondRole,
       firstBase,
       secondBase
     );
-    const attributes = `stroke-width="${fixed(state.basePairWidth)}" stroke-linecap="round" opacity="${precise(
-      opacity
-    )}"`;
-    if (firstColor === secondColor) {
+    const width = state.basePairWidth;
+    const strokeAttributes = artworkStrokeAttributes(width);
+    const midpoint = (segment.firstY + segment.secondY) / 2;
+    const firstInnerY = segment.firstY + (midpoint - segment.firstY) * growth;
+    const secondInnerY = segment.secondY + (midpoint - segment.secondY) * growth;
+    const direction = Math.sign(segment.secondY - segment.firstY) || 1;
+    const capNudge = 0.001 * direction;
+
+    if (!grows && firstColor === secondColor) {
       return `<line x1="${fixed(x)}" y1="${precise(
         segment.firstY
-      )}" x2="${fixed(x)}" y2="${precise(segment.secondY)}" data-pair="${firstBase}-${secondBase}" stroke="${firstColor}" ${attributes}/>`;
-    }
-    const midpoint = (segment.firstY + segment.secondY) / 2;
-    return `<g data-pair="${firstBase}-${secondBase}">
-      <line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
-        midpoint
-      )}" data-half="first" stroke="${firstColor}" ${attributes}/>
-      <line x1="${fixed(x)}" y1="${precise(midpoint)}" x2="${fixed(x)}" y2="${precise(
+      )}" x2="${fixed(x)}" y2="${precise(
         segment.secondY
-      )}" data-half="second" stroke="${secondColor}" ${attributes}/>
+      )}" data-pair="${firstBase}-${secondBase}" data-transition="fade" stroke="${firstColor}" ${strokeAttributes} opacity="${precise(
+        pairOpacity
+      )}" stroke-linecap="round"/>`;
+    }
+
+    // Draw each half from its connected strand towards the midpoint. Butt caps
+    // preserve an exact, flat colour boundary where the halves meet. Separate
+    // zero-length round-capped strokes restore rounded outer ends while keeping
+    // stroke thickness independent of horizontal or vertical aspect scaling.
+    return `<g data-pair="${firstBase}-${secondBase}" data-transition="${grows ? "grow" : "fade"}" opacity="${precise(pairOpacity)}">
+      <line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
+        firstInnerY
+      )}" data-half="first" stroke="${firstColor}" ${strokeAttributes} stroke-linecap="butt"/>
+      <line x1="${fixed(x)}" y1="${precise(secondInnerY)}" x2="${fixed(x)}" y2="${precise(
+        segment.secondY
+      )}" data-half="second" stroke="${secondColor}" ${strokeAttributes} stroke-linecap="butt"/>
+      <line data-cap="first" x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(
+        x
+      )}" y2="${precise(segment.firstY + capNudge)}" stroke="${firstColor}" ${strokeAttributes} stroke-linecap="round"/>
+      <line data-cap="second" x1="${fixed(x)}" y1="${precise(segment.secondY)}" x2="${fixed(
+        x
+      )}" y2="${precise(segment.secondY - capNudge)}" stroke="${secondColor}" ${strokeAttributes} stroke-linecap="round"/>
     </g>`;
   }
 
@@ -1782,11 +2129,14 @@
       const yA = templateY(x, "a", model);
       const yB = templateY(x, "b", model);
 
-      if (!replication.region || replication.profile < PARENTAL_PAIR_FADE_END) {
+      // A parental rung belongs only to unreplicated DNA. Fade it as a fork
+      // approaches from either side, but remove it completely on the first
+      // frame in which the fork has crossed that genomic position.
+      if (!replication.region) {
         const parentalFade =
-          (replication.region ? parentalPairFade(replication.profile) : 1) *
+          parentalPairApproachFade(x, model) *
           basePairForkDistanceFade(x, yA, yB, model, replication);
-        const pair = renderBasePairLine(x, yA, yB, 0.76 * parentalFade, {
+        const pair = renderBasePairLine(x, yA, yB, parentalFade, {
           firstRole: "a",
           secondRole: "b",
           firstBase: identity.first,
@@ -1799,7 +2149,7 @@
         const topNewY = nascentY(x, "top", model);
         const bottomNewY = nascentY(x, "bottom", model);
         const daughterFade = daughterDetailFade(replication.profile);
-        const daughterOpacity = (0.48 + replication.profile * 0.32) * daughterFade;
+        const daughterOpacity = daughterFade;
         const topDistanceFade = basePairForkDistanceFade(x, yA, topNewY, model, replication);
         const bottomDistanceFade = basePairForkDistanceFade(x, yB, bottomNewY, model, replication);
         const topPair = renderBasePairLine(x, yA, topNewY, daughterOpacity * topDistanceFade, {
@@ -1854,11 +2204,12 @@
         sampling.localWindows,
         (x) => numericalPathTangent(bottomYForX, x, fromX, toX)
       );
-      const width = fixed(Math.max(2, state.weight * 0.9));
+      const width = Math.max(2, state.weight * 0.9);
+      const strokeAttributes = artworkStrokeAttributes(width);
       const opacity = precise(smoothstep(spanWidth / 18));
       strands.push(
-        `<path d="${topPath}" fill="none" stroke="${state.colors.newDna}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`,
-        `<path d="${bottomPath}" fill="none" stroke="${state.colors.newDna}" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`
+        `<path d="${topPath}" fill="none" stroke="${stateArtworkColour("newDna")}" ${strokeAttributes} stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`,
+        `<path d="${bottomPath}" fill="none" stroke="${stateArtworkColour("newDna")}" ${strokeAttributes} stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`
       );
     });
 
@@ -1895,10 +2246,11 @@
         (sampleX) => numericalPathTangent(yForX, sampleX, VIEW.x0, VIEW.x1)
       );
       if (!path) return;
+      const width = strand === "a" || strand === "b" ? state.weight : Math.max(2, state.weight * 0.9);
       overpasses.push(
-        `<path d="${path}" fill="none" stroke="${color}" stroke-width="${
-          strand === "a" || strand === "b" ? state.weight : fixed(Math.max(2, state.weight * 0.9))
-        }" stroke-linecap="round" stroke-linejoin="round" opacity="${precise(opacity)}"/>`
+        `<path d="${path}" fill="none" stroke="${color}" ${artworkStrokeAttributes(
+          width
+        )} stroke-linecap="round" stroke-linejoin="round" opacity="${precise(opacity)}"/>`
       );
     };
 
@@ -1907,15 +2259,15 @@
       const even = index % 2 === 0;
 
       if (!replication.region || !state.layers.newDna) {
-        addOverpass(x, even ? "a" : "b", even ? state.colors.templateA : state.colors.templateB);
+        addOverpass(x, even ? "a" : "b", even ? stateArtworkColour("templateA") : stateArtworkColour("templateB"));
         return;
       }
 
       const daughterMix = newDnaVisibleAt(x, replication, model)
         ? daughterDetailFade(replication.profile)
         : 0;
-      addOverpass(x, even ? "a" : "b", even ? state.colors.templateA : state.colors.templateB);
-      addOverpass(x, even ? "bottom" : "top", state.colors.newDna, daughterMix);
+      addOverpass(x, even ? "a" : "b", even ? stateArtworkColour("templateA") : stateArtworkColour("templateB"));
+      addOverpass(x, even ? "bottom" : "top", stateArtworkColour("newDna"), daughterMix);
     });
 
     return `<g aria-label="Alternating strand overpasses">${overpasses.join("")}</g>`;
@@ -1923,6 +2275,39 @@
 
   function interactionHalfHeight() {
     return state.daughterSpacing / 2;
+  }
+
+  function toolGuideBounds(sourceState = state) {
+    const aspectY = Math.max(EPSILON, artworkAspectY(sourceState));
+    const zoom = Math.max(EPSILON, viewState.zoom);
+    const margin = 18 / (zoom * aspectY);
+    const halfExtent =
+      sourceState.daughterSpacing / 2 + doubleStrandHalfHeight(sourceState) + margin;
+    return {
+      top: VIEW.centerY - halfExtent,
+      bottom: VIEW.centerY + halfExtent,
+    };
+  }
+
+  function renderItemDeleteControl(x, y, role, dataAttributes, label) {
+    return `<g class="rs-item-delete-control rs-ui-only" data-role="${role}" ${dataAttributes} transform="${fixedUiTransform(
+      x,
+      y
+    )}" role="button" tabindex="0" aria-label="${label}">
+      <circle class="rs-item-delete-disc" cx="0" cy="0" r="8"/>
+      <path class="rs-item-delete-cross" d="M-3-3L3 3M3-3L-3 3"/>
+      <circle cx="0" cy="0" r="13" fill="transparent"/>
+    </g>`;
+  }
+
+  function renderLocalItemDeleteControl(offsetX, offsetY, role, dataAttributes, label) {
+    return `<g class="rs-item-delete-control rs-ui-only" data-role="${role}" ${dataAttributes} transform="translate(${fixed(
+      offsetX
+    )} ${fixed(offsetY)})" role="button" tabindex="0" aria-label="${label}">
+      <circle class="rs-item-delete-disc" cx="0" cy="0" r="8"/>
+      <path class="rs-item-delete-cross" d="M-3-3L3 3M3-3L-3 3"/>
+      <circle cx="0" cy="0" r="13" fill="transparent"/>
+    </g>`;
   }
 
   function renderOrigins(model) {
@@ -1940,13 +2325,20 @@
         const replication = replicationAt(x, model);
         const labelY = clamp(VIEW.centerY + replication.amount + 42, 370, 500);
         const selectionRing = selected
-          ? `<circle class="rs-ui-only" cx="0" cy="0" r="17" fill="none" stroke="${state.colors.templateA}" stroke-width="3" opacity="0.55"/>`
+          ? `<circle class="rs-ui-only" cx="0" cy="0" r="17" fill="none" stroke="${stateArtworkColour("templateA")}" stroke-width="3" opacity="0.55"/>`
           : "";
         const label = state.layers.labels
           ? `<g class="rs-ui-only" transform="${fixedUiTransform(x, labelY)}"><text x="0" y="4" fill="${canvasInkColor()}" font-family="Inter, Segoe UI, sans-serif" font-size="13" font-weight="700" text-anchor="middle">O${
               origin.index + 1
             }</text></g>`
           : "";
+        const deleteControl = renderLocalItemDeleteControl(
+          21,
+          -21,
+          "delete-origin",
+          `data-origin-id="${origin.id}"`,
+          `Delete origin O${origin.index + 1}`
+        );
 
         return `<g class="rs-origin-marker${dragged ? " is-dragged" : ""}" data-origin-id="${origin.id}">
           <rect class="rs-origin-hover-zone rs-ui-only" data-role="bubble-hover" data-origin-id="${origin.id}" x="${fixed(
@@ -1954,13 +2346,14 @@
           )}" y="${fixed(VIEW.centerY - hitHalfHeight)}" width="${fixed(hitWidth)}" height="${fixed(
             hitHalfHeight * 2
           )}" fill="transparent"/>
-          <g transform="${fixedUiTransform(x, VIEW.centerY)}">
+          <g class="rs-origin-control-cluster" transform="${fixedUiTransform(x, VIEW.centerY)}">
             <g class="rs-origin-visual">
               ${selectionRing}
-              <circle cx="0" cy="0" r="10" fill="#ffffff" stroke="#142126" stroke-width="2.5"/>
-              <circle cx="0" cy="0" r="3.5" fill="${state.colors.basePair}"/>
+              <circle cx="0" cy="0" r="10" fill="${canvasBackgroundColor()}" stroke="${canvasInkColor()}" stroke-width="2.5"/>
+              <path d="M-1.5-4.5L-6 0l4.5 4.5M1.5-4.5L6 0 1.5 4.5" fill="none" stroke="${canvasInkColor()}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </g>
             <circle class="rs-origin-control-hit rs-ui-only" data-role="origin" data-origin-id="${origin.id}" cx="0" cy="0" r="24" fill="transparent"/>
+            ${deleteControl}
           </g>
           ${label}
         </g>`;
@@ -1983,7 +2376,7 @@
     const dragged = dragState?.role === "fork" && dragState.originId === origin.id && dragState.side === side;
     const selected = state.selectedFork?.originId === origin.id && state.selectedFork?.side === side;
     const selectionRing = selected
-      ? `<circle class="rs-fork-selection-ring" cx="0" cy="0" r="16" fill="none" stroke="${state.colors.templateA}" stroke-width="3" opacity="0.58"/>`
+      ? `<circle class="rs-fork-selection-ring" cx="0" cy="0" r="16" fill="none" stroke="${stateArtworkColour("templateA")}" stroke-width="3" opacity="0.58"/>`
       : "";
     const terminalOpacity = clamp(isLeft ? origin.leftTerminalOpacity ?? 1 : origin.rightTerminalOpacity ?? 1, 0, 1);
 
@@ -1991,13 +2384,13 @@
       terminalOpacity
     )}"><g class="rs-fork-terminal-indicator">${arrow}${label}</g><g class="rs-fork-handle rs-ui-only${
       dragged ? " is-dragged" : ""
-    }${selected ? " is-selected" : ""}" data-role="fork" data-origin-id="${
+    }" data-role="fork" data-origin-id="${
       origin.id
     }" data-side="${side}">
         <g class="rs-fork-control-visual">
           ${selectionRing}
-          <circle cx="0" cy="0" r="11" fill="#ffffff" stroke="#142126" stroke-width="2"/>
-          <path d="${chevron}" fill="none" stroke="#142126" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="0" cy="0" r="11" fill="${canvasBackgroundColor()}" stroke="${canvasInkColor()}" stroke-width="2"/>
+          <path d="${chevron}" fill="none" stroke="${canvasInkColor()}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </g>
         <circle cx="0" cy="0" r="24" fill="transparent"/>
       </g>
@@ -2029,11 +2422,24 @@
   }
 
   function renderCuts() {
-    const cuts = state.cuts.map((cut, index) => ({ range: cutRange(cut), index, preview: false }));
+    const repair = previewRepairRange();
+    const displayedCuts = repair ? subtractCutRange(state.cuts, repair) : state.cuts.map(cutRange);
+    const cuts = displayedCuts.map((cut, index) => ({
+      range: cutRange(cut),
+      index: repair ? "preview" : index,
+      preview: Boolean(repair),
+    }));
     const preview = previewCutRange();
+    const cutColor = artworkColour("#b8384b");
     if (preview) cuts.push({ range: preview, index: "preview", preview: true });
+    const guideBounds = toolGuideBounds();
+    const guideTop = clamp(guideBounds.top, 70, VIEW.height - 70);
+    const guideBottom = clamp(guideBounds.bottom, 70, VIEW.height - 70);
+    const guideHeight = Math.max(1, guideBottom - guideTop);
+    const iconOffset = 16 / Math.max(EPSILON, viewState.zoom * artworkAspectY());
+    const iconY = clamp(guideTop - iconOffset, 46, VIEW.height - 46);
 
-    return cuts
+    const renderedCuts = cuts
       .map(({ range, index, preview: isPreview }) => {
         const gapPadding = 9 + state.weight;
         const startX = VIEW.x0 + range.start * VIEW.moleculeWidth;
@@ -2043,21 +2449,69 @@
         const centerX = (startX + endX) / 2;
         const wide = endX - startX > 2;
         const guide = wide
-          ? `<rect x="${fixed(leftX)}" y="180" width="${fixed(rightX - leftX)}" height="260" fill="#b8384b" opacity="0.08"/>
-             <line x1="${fixed(leftX)}" y1="180" x2="${fixed(leftX)}" y2="440" stroke="#b8384b" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.62" vector-effect="non-scaling-stroke"/>
-             <line x1="${fixed(rightX)}" y1="180" x2="${fixed(rightX)}" y2="440" stroke="#b8384b" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.62" vector-effect="non-scaling-stroke"/>`
-          : `<line x1="${fixed(centerX)}" y1="180" x2="${fixed(centerX)}" y2="440" stroke="#b8384b" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.55" vector-effect="non-scaling-stroke"/>`;
+          ? `<rect x="${fixed(leftX)}" y="${fixed(guideTop)}" width="${fixed(
+              rightX - leftX
+            )}" height="${fixed(guideHeight)}" fill="${cutColor}" opacity="0.08"/>
+             <line x1="${fixed(leftX)}" y1="${fixed(guideTop)}" x2="${fixed(leftX)}" y2="${fixed(
+              guideBottom
+            )}" stroke="${cutColor}" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.62" vector-effect="non-scaling-stroke"/>
+             <line x1="${fixed(rightX)}" y1="${fixed(guideTop)}" x2="${fixed(rightX)}" y2="${fixed(
+              guideBottom
+            )}" stroke="${cutColor}" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.62" vector-effect="non-scaling-stroke"/>`
+          : `<line x1="${fixed(centerX)}" y1="${fixed(guideTop)}" x2="${fixed(centerX)}" y2="${fixed(
+              guideBottom
+            )}" stroke="${cutColor}" stroke-width="1.5" stroke-dasharray="4 6" opacity="0.55" vector-effect="non-scaling-stroke"/>`;
+        const deleteControl = isPreview
+          ? ""
+          : renderItemDeleteControl(
+              centerX + 27 / Math.max(EPSILON, viewState.zoom * artworkAspectX()),
+              iconY,
+              "delete-cut",
+              `data-cut-index="${index}"`,
+              `Delete break ${Number(index) + 1}`
+            );
 
         return `<g class="rs-cut-marker${isPreview ? " is-preview" : ""}" data-role="cut" data-cut-index="${index}">
           ${guide}
-          <g class="rs-ui-only" transform="${fixedUiTransform(centerX, 164)}">
-            <circle cx="0" cy="0" r="17" fill="#ffffff" stroke="#b8384b" stroke-width="2"/>
-            <text x="0" y="6" fill="#b8384b" font-family="Segoe UI Symbol, sans-serif" font-size="18" text-anchor="middle">&#9986;</text>
+          <rect class="rs-ui-only" x="${fixed(leftX - 12)}" y="${fixed(
+            guideTop - iconOffset * 2
+          )}" width="${fixed(rightX - leftX + 24)}" height="${fixed(
+            guideHeight + iconOffset * 4
+          )}" fill="transparent"/>
+          <g class="rs-ui-only" transform="${fixedUiTransform(centerX, iconY)}">
+            <circle cx="0" cy="0" r="17" fill="${canvasBackgroundColor()}" stroke="${cutColor}" stroke-width="2"/>
+            <text x="0" y="6" fill="${cutColor}" font-family="Segoe UI Symbol, sans-serif" font-size="18" text-anchor="middle">&#9986;</text>
           </g>
-          <rect class="rs-ui-only" x="${fixed(leftX - 12)}" y="139" width="${fixed(rightX - leftX + 24)}" height="326" fill="transparent"/>
+          ${deleteControl}
         </g>`;
       })
       .join("");
+
+    if (!repair) return renderedCuts;
+    const repairStartX = VIEW.x0 + repair.start * VIEW.moleculeWidth;
+    const repairEndX = VIEW.x0 + repair.end * VIEW.moleculeWidth;
+    const repairLeftX = Math.min(repairStartX, repairEndX);
+    const repairRightX = Math.max(repairStartX, repairEndX);
+    const repairColor = canvasInkColor();
+    const repairWidth = repairRightX - repairLeftX;
+    const repairGuide = repairWidth > 2
+      ? `<g class="rs-repair-preview rs-ui-only" aria-label="Break repair preview">
+          <rect x="${fixed(repairLeftX)}" y="${fixed(guideTop)}" width="${fixed(
+            repairWidth
+          )}" height="${fixed(guideHeight)}" fill="${repairColor}" opacity="0.055"/>
+          <line x1="${fixed(repairLeftX)}" y1="${fixed(guideTop)}" x2="${fixed(
+            repairLeftX
+          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
+          <line x1="${fixed(repairRightX)}" y1="${fixed(guideTop)}" x2="${fixed(
+            repairRightX
+          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
+        </g>`
+      : `<g class="rs-repair-preview rs-ui-only" aria-label="Break repair preview">
+          <line x1="${fixed(repairLeftX)}" y1="${fixed(guideTop)}" x2="${fixed(
+            repairLeftX
+          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
+        </g>`;
+    return `${renderedCuts}${repairGuide}`;
   }
 
   function transformedSvgPoint(x, y, matrix) {
@@ -2100,9 +2554,17 @@
 
   function updateGrid() {
     const frame = elements.canvasFrame;
-    frame.style.setProperty("--rs-canvas-background", state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor);
-    frame.style.setProperty("--rs-canvas-ink", canvasInkColor());
+    const background = canvasBackgroundColor();
+    const ink = canvasInkColor();
+    frame.style.setProperty("--rs-canvas-background", background);
+    frame.style.setProperty("--rs-canvas-ink", ink);
     frame.style.setProperty("--rs-grid-line", canvasGridColor());
+    document.documentElement?.style?.setProperty("--rs-guide-canvas", background);
+    document.documentElement?.style?.setProperty("--rs-guide-ink", ink);
+    document.documentElement?.style?.setProperty(
+      "--rs-guide-base-pair",
+      stateArtworkColour("basePair")
+    );
     frame.classList.toggle("is-grid-hidden", !state.advanced.grid);
     if (!state.advanced.grid) return;
 
@@ -2166,26 +2628,41 @@
     )}</div>`;
   }
 
+  function contextGlyphMarkup(actionName, color) {
+    if (actionName === "split") {
+      return `<circle cx="0" cy="0" r="3.8" fill="${stateArtworkColour("basePair")}"/>`;
+    }
+    if (actionName === "add") {
+      return `<path d="M-5 0H5M0-5V5" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>`;
+    }
+    if (actionName === "repair") {
+      return `<text x="0" y="5" fill="${color}" font-family="Inter, Segoe UI Symbol, sans-serif" font-size="17" font-weight="700" text-anchor="middle">&#8634;</text>`;
+    }
+    return `<text x="0" y="5" fill="${color}" font-family="Inter, Segoe UI Symbol, sans-serif" font-size="16" font-weight="700" text-anchor="middle">&#9986;</text>`;
+  }
+
   function renderContextAction() {
+    const bounds = toolGuideBounds();
     return `<g id="rs-context-action" class="rs-context-action rs-ui-only" data-action="add" visibility="hidden">
-      <line x1="0" y1="${VIEW.centerY - 40}" x2="0" y2="${
-        VIEW.centerY + 40
-      }" fill="none" stroke="${canvasInkColor()}" stroke-width="1.6" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"/>
+      <line x1="0" y1="${fixed(bounds.top)}" x2="0" y2="${fixed(
+        bounds.bottom
+      )}" fill="none" stroke="${canvasInkColor()}" stroke-width="1.6" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"/>
       <g id="rs-context-symbol" transform="${fixedUiTransform(0, VIEW.centerY)}">
-        <circle cx="0" cy="0" r="14" fill="${
-          state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor
-        }" stroke="${canvasInkColor()}" stroke-width="1.7"/>
-        <text x="0" y="5" fill="${canvasInkColor()}" font-family="Inter, Segoe UI Symbol, sans-serif" font-size="16" font-weight="700" text-anchor="middle">+</text>
+        <circle id="rs-context-ring" cx="0" cy="0" r="16" fill="${
+          canvasBackgroundColor()
+        }" stroke="${canvasInkColor()}" stroke-width="1.8"/>
+        <g id="rs-context-glyph"></g>
       </g>
     </g>`;
   }
-
   function updateCanvasLegend() {
     const items = [
-      [state.colors.templateA, "Template A"],
-      [state.colors.templateB, "Template B"],
+      [stateArtworkColour("templateA"), "Template A"],
+      [stateArtworkColour("templateB"), "Template B"],
     ];
-    if (state.layers.newDna && strandModel() !== "minimal") items.push([state.colors.newDna, "New strands"]);
+    if (state.layers.newDna && strandModel() !== "minimal") {
+      items.push([stateArtworkColour("newDna"), "New strands"]);
+    }
     elements.canvasLegend.hidden = !state.layers.labels;
     elements.canvasLegend.innerHTML = state.layers.labels
       ? items
@@ -2239,8 +2716,12 @@
     );
 
     return `${renderBasePairs(model)}
-      <path d="${pathA}" fill="none" stroke="${state.colors.templateA}" stroke-width="${state.weight}" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="${pathB}" fill="none" stroke="${state.colors.templateB}" stroke-width="${state.weight}" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="${pathA}" fill="none" stroke="${stateArtworkColour("templateA")}" ${artworkStrokeAttributes(
+        state.weight
+      )} stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="${pathB}" fill="none" stroke="${stateArtworkColour("templateB")}" ${artworkStrokeAttributes(
+        state.weight
+      )} stroke-linecap="round" stroke-linejoin="round"/>
       ${renderNascentDna(model)}
       ${renderCrossoverOverpasses(model)}`;
   }
@@ -2304,10 +2785,6 @@
     } ${-VIEW.centerY})`;
   }
 
-  function updateProjectAccent() {
-    elements.app?.style?.setProperty("--rs-template-a", state.colors.templateA);
-  }
-
   function render() {
     let model = getReplicationModel();
     if (synchroniseOriginPositions()) model = getReplicationModel();
@@ -2317,8 +2794,8 @@
     const selectedOrigin = !state.selectedFork
       ? model.origins.find((origin) => origin.id === state.selectedOriginId)
       : null;
-    updateProjectAccent();
     elements.canvas.classList.toggle("rs-show-all-controls", state.advanced.alwaysShowControls);
+    const liveArtwork = withArtworkStrokeScale(viewState.zoom, () => artworkMarkup(model));
 
     elements.canvas.innerHTML = `
       <title id="dnaCanvasTitle">RepliSketch DNA replication diagram</title>
@@ -2334,7 +2811,7 @@
       <g id="rs-world" transform="${worldTransform()}">
         <g id="rs-export-artwork" aria-label="DNA molecule">
           <g id="rs-artwork-aspect" transform="${artworkAspectTransform()}">
-            ${artworkMarkup(model)}
+            ${liveArtwork}
           </g>
         </g>
         <g id="rs-ui-aspect" transform="${artworkAspectTransform()}">
@@ -2390,19 +2867,16 @@
     if (elements.terminalSmoothingOutput) {
       elements.terminalSmoothingOutput.textContent = terminalSmoothingLabel();
     }
-    elements.speedOutput.textContent = `${state.speed.toFixed(2).replace(/0$/, "")}x`;
+    elements.speedOutput.textContent = speedMultiplierLabel();
     elements.zoomOutput.textContent = `${Math.round(viewState.zoom * 100)}%`;
-    elements.aspectOutput.textContent = `${Math.round(artworkAspectX() * 100)}×${Math.round(
-      artworkAspectY() * 100
-    )}`;
     elements.lengthStat.textContent = `${basePairCount()} bp`;
     elements.originStat.textContent = state.origins.length;
     elements.forkStat.textContent = model.activeForkCount;
     elements.replicatedStat.textContent = `${replicated}%`;
     elements.progressControl.value = state.progress;
     elements.lengthControl.max = maximumLengthForBasePairCount(state);
-    elements.clearCutsButton.disabled = state.cuts.length === 0;
-    elements.deleteOriginButton.disabled = !state.origins.some((origin) => origin.id === state.selectedOriginId);
+    elements.deleteBreaksButton.disabled = state.cuts.length === 0;
+    elements.deleteOriginsButton.disabled = state.origins.length === 0;
     elements.playButton.disabled = state.origins.length === 0;
     updateHistoryButtons();
   }
@@ -2434,8 +2908,9 @@
     if (elements.terminalSmoothingControl) {
       elements.terminalSmoothingControl.value = terminalSmoothing();
     }
-    elements.speedControl.value = state.speed;
+    elements.speedControl.value = speedMultiplier();
     elements.basePairColorModeControl.value = pairMode;
+    elements.basePairTransitionControl.value = basePairTransitionMode();
     elements.templateAColor.value = state.colors.templateA;
     elements.templateBColor.value = state.colors.templateB;
     elements.newDnaColor.value = state.colors.newDna;
@@ -2455,19 +2930,16 @@
     elements.snapToBasePairsToggle.checked = snapEditingEnabled();
     elements.includeExportBackgroundToggle.checked = state.advanced.includeExportBackground;
     elements.discreteAnimationToggle.checked = discreteAnimationEnabled();
-    elements.aspectNarrowButton.disabled = artworkAspectX() <= CONTROL_RANGES.aspectX.min + EPSILON;
-    elements.aspectWidenButton.disabled = artworkAspectX() >= CONTROL_RANGES.aspectX.max - EPSILON;
-    elements.aspectShorterButton.disabled = artworkAspectY() <= CONTROL_RANGES.aspectY.min + EPSILON;
-    elements.aspectTallerButton.disabled = artworkAspectY() >= CONTROL_RANGES.aspectY.max - EPSILON;
-    elements.aspectResetButton.disabled =
-      Math.abs(artworkAspectX() - 1) < EPSILON && Math.abs(artworkAspectY() - 1) < EPSILON;
-    elements.backgroundColorControl.value = state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor;
+    elements.aspectXControl.value = Math.round(aspectSliderValue("x"));
+    elements.aspectYControl.value = Math.round(aspectSliderValue("y"));
+    elements.backgroundColorControl.value = backgroundControlColor();
     elements.pairResolutionControl.disabled = !doubleStrandDetails;
     elements.basePairWidthControl.disabled = !doubleStrandDetails;
     if (elements.doubleStrandHeightControl) elements.doubleStrandHeightControl.disabled = !doubleStrandDetails;
     elements.pairsToggle.disabled = !doubleStrandDetails;
     elements.newDnaToggle.disabled = modelName === "minimal";
     elements.basePairColorModeControl.disabled = !doubleStrandDetails;
+    elements.basePairTransitionControl.disabled = !doubleStrandDetails;
     elements.basePairColor.disabled = !doubleStrandDetails || pairMode !== "single";
     [elements.adenineColor, elements.thymineColor, elements.guanineColor, elements.cytosineColor].forEach(
       (control) => { control.disabled = !doubleStrandDetails || pairMode !== "bases"; }
@@ -2476,7 +2948,6 @@
     elements.crossoverGapsToggle.disabled = modelName !== "standard";
     elements.newDnaStartDistanceControl.disabled = modelName === "minimal";
     elements.strandPhaseShiftControl.disabled = modelName !== "standard";
-    updateProjectAccent();
     updatePlayButton();
     updateReadouts();
   }
@@ -2511,61 +2982,106 @@
 
   function hideContextAction() {
     const action = elements.canvas.querySelector("#rs-context-action");
-    if (action) action.setAttribute("visibility", "hidden");
+    if (action) {
+      action.setAttribute("visibility", "hidden");
+      action.style.display = "none";
+      action.removeAttribute("transform");
+      const glyph = action.querySelector("#rs-context-glyph");
+      if (glyph) glyph.replaceChildren();
+    }
     delete elements.canvas.dataset.contextAction;
   }
-
-  function refreshContextAction() {
-    const action = elements.canvas.querySelector("#rs-context-action");
-    elements.canvas.classList.toggle("is-pan-ready", Boolean(hoverState && modifierState.pan && !dragState));
-    if (!action || !hoverState || dragState || modifierState.pan) {
-      hideContextAction();
-      return;
-    }
-
-    const point = screenToWorld(hoverState.point);
+  function canvasActionAtPoint(point, role = null, model = getReplicationModel()) {
+    if (!point || ["origin", "fork", "cut", "delete-origin", "delete-cut"].includes(role)) return null;
+    const halfHeight = interactionHalfHeight();
     if (
       point.x < VIEW.x0 ||
       point.x > VIEW.x1 ||
       point.y < 120 ||
       point.y > 500 ||
-      (!modifierState.shift && ["origin", "fork", "cut"].includes(hoverState.role))
+      Math.abs(point.y - VIEW.centerY) > halfHeight
     ) {
+      return null;
+    }
+    return replicationAt(point.x, model).region ? "split" : "add";
+  }
+
+  function refreshContextAction() {
+    const action = elements.canvas.querySelector("#rs-context-action");
+    if (!hoverState || dragState) {
+      elements.canvas.classList.remove("is-pan-ready");
       hideContextAction();
       return;
     }
 
-    const replication = replicationAt(point.x, getReplicationModel());
+    const point = screenToWorld(hoverState.point);
     const halfHeight = interactionHalfHeight();
-    if (Math.abs(point.y - VIEW.centerY) > halfHeight) {
+    const withinChromosome = point.x >= VIEW.x0 && point.x <= VIEW.x1;
+    const withinEditingBand =
+      withinChromosome &&
+      point.y >= 120 &&
+      point.y <= 500 &&
+      Math.abs(point.y - VIEW.centerY) <= halfHeight;
+    const directControl = ["origin", "fork", "delete-origin", "delete-cut"].includes(hoverState.role);
+    const ordinaryAction = canvasActionAtPoint(point, hoverState.role);
+    const repairAvailable =
+      modifierState.special &&
+      withinChromosome &&
+      !directControl &&
+      (withinEditingBand || hoverState.role === "cut");
+    const actionName = repairAvailable
+      ? "repair"
+      : modifierState.special
+        ? null
+        : modifierState.shift && (withinEditingBand || hoverState.role === "cut")
+          ? "cut"
+          : ordinaryAction;
+    const panReady =
+      !modifierState.shift &&
+      !modifierState.special &&
+      !directControl &&
+      !ordinaryAction;
+    elements.canvas.classList.toggle("is-pan-ready", panReady);
+
+    if (!action || !actionName) {
       hideContextAction();
       return;
     }
 
-    const actionName = modifierState.shift ? "cut" : replication.region ? "split" : "add";
-    const color = actionName === "cut" ? "#b8384b" : canvasInkColor();
-    const symbols = { add: "+", split: "\u2194", cut: "\u2702" };
-    const labels = { add: "Add origin", split: "Split bubble", cut: "Cut or repair DNA" };
+    // Clear the previous symbol before switching between contextual actions.
+    // This prevents a stale plus or scissors glyph from surviving one pointer
+    // frame while the replacement SVG fragment is installed.
+    hideContextAction();
+
+    const color = ["cut", "repair"].includes(actionName) ? artworkColour("#b8384b") : canvasInkColor();
+    const labels = {
+      add: "Add origin",
+      split: "Split bubble",
+      cut: "Break region",
+      repair: "Repair break region",
+    };
     const line = action.querySelector("line");
     const symbolGroup = action.querySelector("#rs-context-symbol");
-    const circle = symbolGroup.querySelector("circle");
-    const symbol = symbolGroup.querySelector("text");
-    const symbolY = clamp(point.y, VIEW.centerY - halfHeight + 16, VIEW.centerY + halfHeight - 16);
+    const ring = action.querySelector("#rs-context-ring");
+    const glyph = action.querySelector("#rs-context-glyph");
+    const symbolY = clamp(point.y, VIEW.centerY - halfHeight + 18, VIEW.centerY + halfHeight - 18);
+    const guideBounds = toolGuideBounds();
 
     action.dataset.action = actionName;
     action.setAttribute("aria-label", labels[actionName]);
     action.setAttribute("transform", `translate(${fixed(point.x)} 0)`);
-    action.setAttribute("visibility", "visible");
-    line.setAttribute("y1", fixed(VIEW.centerY - halfHeight));
-    line.setAttribute("y2", fixed(VIEW.centerY + halfHeight));
+    line.setAttribute("y1", fixed(guideBounds.top));
+    line.setAttribute("y2", fixed(guideBounds.bottom));
     line.setAttribute("stroke", color);
     symbolGroup.setAttribute("transform", fixedUiTransform(0, symbolY));
-    circle.setAttribute("stroke", color);
-    symbol.setAttribute("fill", color);
-    symbol.textContent = symbols[actionName];
+    ring.setAttribute("r", "16");
+    ring.setAttribute("stroke-width", "1.8");
+    ring.setAttribute("stroke", color);
+    glyph.innerHTML = contextGlyphMarkup(actionName, color);
     elements.canvas.dataset.contextAction = actionName;
+    action.style.display = "";
+    action.setAttribute("visibility", "visible");
   }
-
   function rememberPointer(event) {
     const target = event.target.closest?.("[data-role]");
     hoverState = {
@@ -2573,7 +3089,7 @@
       role: target?.dataset.role || null,
     };
     modifierState.shift = event.shiftKey;
-    modifierState.pan = event.ctrlKey || event.metaKey;
+    modifierState.special = event.ctrlKey || event.metaKey;
     refreshContextAction();
   }
 
@@ -2596,24 +3112,22 @@
   }
 
   function resetView() {
+    const aspectChanged =
+      Math.abs(artworkAspectX() - 1) >= EPSILON || Math.abs(artworkAspectY() - 1) >= EPSILON;
+    if (aspectChanged) pushSnapshot();
+    state.advanced.aspectX = 1;
+    state.advanced.aspectY = 1;
     viewState = { zoom: 1, panX: 0, panY: 0 };
+    syncControls();
     render();
-    setStatus("Preview reset");
+    setStatus("View and aspect reset");
   }
 
-  function aspectStatus() {
-    return `Aspect ${Math.round(artworkAspectX() * 100)}% \u00d7 ${Math.round(artworkAspectY() * 100)}%`;
-  }
-
-  function changeArtworkAspect(axis, increment) {
-    const key = axis === "y" ? "aspectY" : "aspectX";
-    const current = key === "aspectY" ? artworkAspectY() : artworkAspectX();
-    const next = boundedControlValue(key, Math.round((current + increment) * 10) / 10, current);
-    if (Math.abs(next - current) < EPSILON) return;
-    pushSnapshot();
-    state.advanced[key] = next;
+  function setArtworkAspectFromSlider(axis, sliderValue) {
+    const key = aspectKey(axis);
+    state.advanced[key] = aspectFactorFromSlider(axis, sliderValue);
     render();
-    setStatus(aspectStatus());
+    setStatus(axis === "y" ? "Vertical aspect adjusted" : "Horizontal aspect adjusted");
   }
 
   function resetArtworkAspect() {
@@ -2621,6 +3135,7 @@
     pushSnapshot();
     state.advanced.aspectX = 1;
     state.advanced.aspectY = 1;
+    syncControls();
     render();
     setStatus("Aspect reset");
   }
@@ -2637,7 +3152,7 @@
   }
 
   function addOrRepairCut(x) {
-    const position = normalisedX(x);
+    const position = cutInteractionFraction(normalisedX(x));
     const tolerance = 24 / VIEW.moleculeWidth;
     const existingIndex = state.cuts.findIndex((cut) => {
       const range = cutRange(cut);
@@ -2659,7 +3174,7 @@
   }
 
   function commitCutRange(start, end, startSnapshot) {
-    const range = cutRange({ start, end });
+    const range = cutInteractionRange(start, end);
     const nextCuts = normaliseCutRegions([...state.cuts, range]);
     if (nextCuts.length > 10) {
       setStatus("Break limit reached");
@@ -2673,6 +3188,36 @@
     const endBp = genomicPositionAtFraction(range.end);
     setStatus(`Region removed from ${startBp}\u2013${endBp} bp`);
     render();
+  }
+
+  function commitRepairRange(start, end, startSnapshot) {
+    const range = cutInteractionRange(start, end);
+    const nextCuts = subtractCutRange(state.cuts, range);
+    if (JSON.stringify(nextCuts) === JSON.stringify(state.cuts.map(cutRange))) {
+      render();
+      setStatus("No break lies within that region");
+      return;
+    }
+    pushSnapshot(startSnapshot);
+    state.cuts = nextCuts;
+    const startBp = genomicPositionAtFraction(range.start);
+    const endBp = genomicPositionAtFraction(range.end);
+    render();
+    setStatus(`Breaks repaired from ${startBp}\u2013${endBp} bp`);
+  }
+
+  function repairBreakAtFraction(fraction, indexHint = -1) {
+    const hintedIndex = Number(indexHint);
+    const cutIndex = Number.isInteger(hintedIndex) && hintedIndex >= 0
+      ? hintedIndex
+      : cutIndexAtFraction(fraction, state, 18);
+    if (cutIndex < 0 || cutIndex >= state.cuts.length) {
+      render();
+      setStatus("No break at that position");
+      return false;
+    }
+    deleteCutByIndex(cutIndex);
+    return true;
   }
 
   function addOrigin(x) {
@@ -2892,7 +3437,37 @@
     let movingPosition = desiredPosition;
     let collapsePending = false;
 
-    if (Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary)) {
+    if (activeDrag.mirroredForks && activeDrag.pairedForks) {
+      const center = clamp(activeDrag.originStartPosition, 0, 1);
+      const maximumHalfWidth = Math.min(center, 1 - center);
+      const rawHalfWidth = activeDrag.side === "left"
+        ? center - desiredPosition
+        : desiredPosition - center;
+      let halfWidth = clamp(rawHalfWidth, 0, maximumHalfWidth);
+
+      if (snapEditingEnabled(sourceState) && halfWidth > EPSILON) {
+        const sidePosition = activeDrag.side === "left" ? center - halfWidth : center + halfWidth;
+        const snappedPosition = snapFractionToBasePair(sidePosition, sourceState, {
+          min: activeDrag.side === "left" ? center - maximumHalfWidth : center,
+          max: activeDrag.side === "left" ? center : center + maximumHalfWidth,
+        });
+        if (snappedPosition === null) return null;
+        halfWidth = Math.abs(snappedPosition - center);
+      }
+
+      const forkGapPx =
+        halfWidth * 2 * VIEW.moleculeWidth * viewState.zoom * artworkAspectX(sourceState);
+      collapsePending = rawHalfWidth <= 0 || forkGapPx <= FORK_COLLAPSE_PX;
+      if (collapsePending) halfWidth = 0;
+
+      const leftPosition = center - halfWidth;
+      const rightPosition = center + halfWidth;
+      origin.startPosition = center;
+      origin.position = center;
+      origin.leftOffset = halfWidth - globalTravel;
+      origin.rightOffset = halfWidth - globalTravel;
+      movingPosition = activeDrag.side === "left" ? leftPosition : rightPosition;
+    } else if (Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary)) {
       collapsePending = forkReachedChromosomeEnd(desiredPosition, completionBoundary);
       movingPosition = collapsePending
         ? completionBoundary
@@ -2968,6 +3543,7 @@
       geometry,
       movingPosition,
       collapsePending,
+      mirrored: Boolean(activeDrag.mirroredForks && activeDrag.pairedForks),
       terminalClosure: Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary),
     };
   }
@@ -2979,44 +3555,98 @@
     return true;
   }
 
+  function splitBubbleClearancePx(sourceState = state) {
+    const configuredWeight = Number(sourceState?.weight);
+    const strandWeight = Number.isFinite(configuredWeight)
+      ? boundedControlValue("weight", configuredWeight, DEFAULTS.weight)
+      : DEFAULTS.weight;
+    const strokeClearance = Math.max(12, strandWeight * 2 + 4);
+    const smoothingClearance = 2 * terminalPullSpan(0.5, "right", sourceState);
+    return Math.max(strokeClearance, smoothingClearance);
+  }
+
+  function splitBubbleGapSteps(sourceState = state) {
+    const pairSpacingPx = basePairStepFraction(sourceState) * VIEW.moleculeWidth;
+    return Math.max(1, Math.ceil(splitBubbleClearancePx(sourceState) / pairSpacingPx - 1e-10));
+  }
+
+  function splitCompatibleCenterFraction(
+    fraction,
+    gapSteps,
+    sourceState = state,
+    { min = 0, max = 1 } = {}
+  ) {
+    const lattice = basePairLattice(sourceState);
+    const phase = gapSteps % 2 === 0 ? 0 : 0.5;
+    const lowerFraction = clamp(Math.min(Number(min) || 0, Number(max) || 0), 0, 1);
+    const upperFraction = clamp(Math.max(Number(min) || 0, Number(max) || 0), 0, 1);
+    const lowerCoordinate = lowerFraction * lattice.subdivisionCount - lattice.edgeOffset;
+    const upperCoordinate = upperFraction * lattice.subdivisionCount - lattice.edgeOffset;
+    const firstCoordinate = Math.ceil(lowerCoordinate - phase - 1e-10) + phase;
+    const lastCoordinate = Math.floor(upperCoordinate - phase + 1e-10) + phase;
+    if (firstCoordinate > lastCoordinate) return null;
+
+    const targetCoordinate =
+      clamp(Number(fraction) || 0, 0, 1) * lattice.subdivisionCount - lattice.edgeOffset;
+    const snappedCoordinate = clamp(
+      Math.round(targetCoordinate - phase) + phase,
+      firstCoordinate,
+      lastCoordinate
+    );
+    return (lattice.edgeOffset + snappedCoordinate) / lattice.subdivisionCount;
+  }
+
+  function splitBubbleDimensions(region, sourceState = state) {
+    const regionWidth = Math.max(0, Number(region?.end) - Number(region?.start));
+    const pairStep = basePairStepFraction(sourceState);
+    const targetGapPx = splitBubbleClearancePx(sourceState);
+    const targetGap = targetGapPx / VIEW.moleculeWidth;
+    const gapSteps = splitBubbleGapSteps(sourceState);
+    // In continuous editing, preserve the exact visual clearance required by
+    // the fork smoothing. With snapping enabled, round that clearance outward
+    // to the nearest whole lattice interval so both new fork endpoints remain
+    // valid discrete sites and never receive less room than the smooth merge.
+    const gap = snapEditingEnabled(sourceState) ? gapSteps * pairStep : targetGap;
+    const minimumWidth = Math.max(pairStep * 2, gap / 2);
+    return {
+      gap,
+      gapSteps,
+      targetGap,
+      targetGapPx,
+      minimumWidth,
+      requiredWidth: minimumWidth * 2 + gap,
+      regionWidth,
+    };
+  }
+
   function splitBubble(x) {
-    const position = interactionFraction(normalisedX(x));
-    if (position === null) return;
+    const position = normalisedX(x);
     const model = getReplicationModel();
     const region = model.regions.find((item) => position >= item.start && position <= item.end);
-    if (!region || region.end - region.start < 0.08) {
+    if (!region) {
       setStatus("Choose a wider replication bubble");
       return;
     }
-    const gap = Math.min(0.03, (region.end - region.start) / 5);
-    const minimumWidth = Math.max(0.025, gap);
+    const { gap, gapSteps, minimumWidth, requiredWidth } = splitBubbleDimensions(region);
+    if (region.end - region.start < requiredWidth - EPSILON) {
+      setStatus("Choose a wider replication bubble");
+      return;
+    }
     const minimumSplit = region.start + minimumWidth + gap / 2;
     const maximumSplit = region.end - minimumWidth - gap / 2;
     const continuousSplit = clamp(position, minimumSplit, maximumSplit);
     const split = snapEditingEnabled()
-      ? snapFractionToBasePair(continuousSplit, state, { min: minimumSplit, max: maximumSplit })
+      ? splitCompatibleCenterFraction(continuousSplit, gapSteps, state, {
+          min: minimumSplit,
+          max: maximumSplit,
+        })
       : continuousSplit;
     if (split === null) {
-      setStatus("Choose a wider replication bubble for base-pair snapping");
+      setStatus("Choose a wider replication bubble");
       return;
     }
-    let leftEnd = split - gap / 2;
-    let rightStart = split + gap / 2;
-    if (snapEditingEnabled()) {
-      const halfBasePairStep = basePairStepFraction() / 2;
-      leftEnd = snapFractionToBasePair(leftEnd, state, {
-        min: region.start + minimumWidth,
-        max: split - halfBasePairStep,
-      });
-      rightStart = snapFractionToBasePair(rightStart, state, {
-        min: split + halfBasePairStep,
-        max: region.end - minimumWidth,
-      });
-      if (leftEnd === null || rightStart === null || leftEnd >= rightStart) {
-        setStatus("Choose a wider replication bubble for base-pair snapping");
-        return;
-      }
-    }
+    const leftEnd = split - gap / 2;
+    const rightStart = split + gap / 2;
     const left = bubbleFromBounds(region.start, leftEnd);
     const right = bubbleFromBounds(rightStart, region.end);
     const replacedIds = new Set(region.originIds);
@@ -3032,25 +3662,54 @@
     setStatus("Replication bubble split");
   }
 
-  function deleteSelectedOrigin() {
-    const index = state.origins.findIndex((origin) => origin.id === state.selectedOriginId);
+  function deleteOriginById(originId) {
+    const index = state.origins.findIndex((origin) => origin.id === originId);
     if (index < 0) return;
     pushSnapshot();
     state.origins.splice(index, 1);
-    state.selectedOriginId = null;
-    state.selectedFork = null;
+    if (state.selectedOriginId === originId) state.selectedOriginId = null;
+    if (state.selectedFork?.originId === originId) state.selectedFork = null;
     synchroniseOriginPositions();
     syncControls();
     render();
     setStatus("Origin deleted");
   }
 
-  function clearCuts() {
+  function deleteSelectedOrigin() {
+    if (!state.selectedOriginId) return;
+    deleteOriginById(state.selectedOriginId);
+  }
+
+  function deleteAllOrigins() {
+    if (!state.origins.length) return;
+    pushSnapshot();
+    stopAnimation();
+    state.origins = [];
+    state.selectedOriginId = null;
+    state.selectedFork = null;
+    state.forkTravel = 0;
+    state.progress = 0;
+    resetForkPlaybackClock();
+    syncControls();
+    render();
+    setStatus("All origins deleted");
+  }
+
+  function deleteCutByIndex(index) {
+    const cutIndex = Number(index);
+    if (!Number.isInteger(cutIndex) || cutIndex < 0 || cutIndex >= state.cuts.length) return;
+    pushSnapshot();
+    state.cuts.splice(cutIndex, 1);
+    render();
+    setStatus("Break deleted");
+  }
+
+  function deleteAllBreaks() {
     if (!state.cuts.length) return;
     pushSnapshot();
     state.cuts = [];
     render();
-    setStatus("All breaks repaired");
+    setStatus("All breaks deleted");
   }
 
   function beginPan(event, screenPoint) {
@@ -3069,8 +3728,41 @@
     event.preventDefault();
   }
 
+  function beginCanvasGesture(event, screenPoint, worldPoint, action = "deselect") {
+    dragState = {
+      pointerId: event.pointerId,
+      role: "canvas-gesture",
+      startX: screenPoint.x,
+      startY: screenPoint.y,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startPanX: viewState.panX,
+      startPanY: viewState.panY,
+      action,
+      actionX: worldPoint.x,
+      moved: false,
+    };
+    hideContextAction();
+    elements.canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function performCanvasClick(action, x) {
+    if (action === "split") {
+      splitBubble(x);
+      return;
+    }
+    if (action === "add") {
+      addOrigin(x);
+      return;
+    }
+    state.selectedOriginId = null;
+    state.selectedFork = null;
+    render();
+  }
+
   function beginCutRange(event, x) {
-    const position = normalisedX(x);
+    const position = cutInteractionFraction(normalisedX(x));
     dragState = {
       pointerId: event.pointerId,
       role: "cut-range",
@@ -3086,42 +3778,100 @@
     event.preventDefault();
   }
 
+  function beginRepairRange(event, x, cutIndex = -1) {
+    const position = cutInteractionFraction(normalisedX(x));
+    dragState = {
+      pointerId: event.pointerId,
+      role: "repair-range",
+      anchor: position,
+      current: position,
+      cutIndex,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startSnapshot: snapshot(),
+      moved: false,
+    };
+    hideContextAction();
+    elements.canvas.setPointerCapture(event.pointerId);
+    elements.canvas.classList.add("is-repairing");
+    event.preventDefault();
+  }
+
+  function handleCanvasControlKeydown(event) {
+    if (!['Enter', ' '].includes(event.key)) return;
+    const target = event.target.closest?.("[data-role]");
+    const role = target?.dataset.role;
+    if (role === "delete-origin") {
+      event.preventDefault();
+      deleteOriginById(target.dataset.originId);
+    } else if (role === "delete-cut") {
+      event.preventDefault();
+      deleteCutByIndex(Number(target.dataset.cutIndex));
+    }
+  }
+
   function handlePointerDown(event) {
     const screenPoint = pointFromEvent(event);
-    if (event.button === 1 || (event.button === 0 && (event.ctrlKey || event.metaKey))) {
+    const target = event.target.closest("[data-role]");
+    const role = target?.dataset.role || null;
+    if (event.button === 0 || event.pointerType === "touch") {
+      if (role === "delete-origin") {
+        deleteOriginById(target.dataset.originId);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (role === "delete-cut") {
+        deleteCutByIndex(Number(target.dataset.cutIndex));
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
+    if (event.button === 1) {
       beginPan(event, screenPoint);
       return;
     }
     if (event.button !== 0 && event.pointerType !== "touch") return;
-    const point = screenToWorld(screenPoint);
-    if (point.x < VIEW.x0 - 12 || point.x > VIEW.x1 + 12 || point.y < 130 || point.y > 480) return;
 
-    const target = event.target.closest("[data-role]");
-    const role = target?.dataset.role || null;
-    const replication = replicationAt(point.x, getReplicationModel());
+    const point = screenToWorld(screenPoint);
     const halfHeight = interactionHalfHeight();
+    const specialControl = event.ctrlKey || event.metaKey;
+
+    if (specialControl && role !== "fork" && role !== "origin") {
+      const repairAvailable =
+        point.x >= VIEW.x0 &&
+        point.x <= VIEW.x1 &&
+        (role === "cut" || Math.abs(point.y - VIEW.centerY) <= halfHeight);
+      if (!repairAvailable) return;
+      const cutIndex = role === "cut"
+        ? Number(target.dataset.cutIndex)
+        : cutIndexAtFraction(normalisedX(point.x), state, 18);
+      beginRepairRange(event, point.x, cutIndex);
+      return;
+    }
+
     if (event.shiftKey) {
-      if (role !== "cut" && Math.abs(point.y - VIEW.centerY) > halfHeight) return;
+      const breakAvailable =
+        point.x >= VIEW.x0 &&
+        point.x <= VIEW.x1 &&
+        Math.abs(point.y - VIEW.centerY) <= halfHeight;
+      if (role !== "cut" && !breakAvailable) return;
       beginCutRange(event, point.x);
       return;
     }
 
+    if (role === "cut") {
+      setStatus("Hold Ctrl to repair a break region");
+      return;
+    }
+
     if (role !== "origin" && role !== "fork") {
-      if (role === "cut") {
-        setStatus("Shift-click the break to repair it");
-        return;
-      }
-
-      if (Math.abs(point.y - VIEW.centerY) <= halfHeight) {
-        if (replication.region) splitBubble(point.x);
-        else addOrigin(point.x);
-        event.preventDefault();
-        return;
-      }
-
-      state.selectedOriginId = null;
-      state.selectedFork = null;
-      render();
+      // A click keeps the molecular edit implied by the cursor, while a drag
+      // pans the preview. Direct origin/fork controls are handled below and
+      // therefore always take precedence over default panning.
+      const action = canvasActionAtPoint(point, role) || "deselect";
+      beginCanvasGesture(event, screenPoint, point, action);
       return;
     }
 
@@ -3151,6 +3901,7 @@
       leftPosition: geometry.leftPosition,
       rightPosition: geometry.rightPosition,
       pairedForks: geometry.leftActive && geometry.rightActive,
+      mirroredForks: role === "fork" && specialControl && geometry.leftActive && geometry.rightActive,
       terminalClosureBoundary: role === "fork"
         ? terminalClosureForFork(geometry, target.dataset.side)?.completionBoundary ?? null
         : null,
@@ -3175,13 +3926,38 @@
     }
     if (dragState.pointerId !== event.pointerId) return;
     const screenPoint = pointFromEvent(event);
+    if (dragState.role === "canvas-gesture") {
+      const distance = Math.hypot(
+        event.clientX - dragState.startClientX,
+        event.clientY - dragState.startClientY
+      );
+      if (distance < PAN_DRAG_THRESHOLD_PX) return;
+      dragState.role = "pan";
+      dragState.moved = true;
+      elements.canvas.classList.add("is-panning");
+      hideContextAction();
+    }
     if (dragState.role === "cut-range") {
       const point = screenToWorld(screenPoint);
-      dragState.current = normalisedX(point.x);
+      dragState.current = cutInteractionFraction(normalisedX(point.x));
       const distance = Math.hypot(event.clientX - dragState.startClientX, event.clientY - dragState.startClientY);
       if (!dragState.moved && distance >= CUT_DRAG_THRESHOLD_PX) {
         dragState.moved = true;
         elements.canvas.classList.add("is-cutting");
+      }
+      if (dragState.moved) render();
+      event.preventDefault();
+      return;
+    }
+    if (dragState.role === "repair-range") {
+      const point = screenToWorld(screenPoint);
+      dragState.current = cutInteractionFraction(normalisedX(point.x));
+      const distance = Math.hypot(
+        event.clientX - dragState.startClientX,
+        event.clientY - dragState.startClientY
+      );
+      if (!dragState.moved && distance >= CUT_DRAG_THRESHOLD_PX) {
+        dragState.moved = true;
       }
       if (dragState.moved) render();
       event.preventDefault();
@@ -3225,7 +4001,11 @@
       state.selectedFork = { originId: dragState.originId, side: dragState.side };
       const dragResult = applyForkDragPosition(dragState, normalisedX(point.x));
       if (!dragResult) return;
-      setStatus(`${dragState.side === "left" ? "Left" : "Right"} fork adjusted`);
+      setStatus(
+        dragState.mirroredForks
+          ? "Both forks adjusted symmetrically"
+          : `${dragState.side === "left" ? "Left" : "Right"} fork adjusted`
+      );
     }
 
     render();
@@ -3247,6 +4027,7 @@
     elements.canvas.classList.remove("is-dragging");
     elements.canvas.classList.remove("is-panning");
     elements.canvas.classList.remove("is-cutting");
+    elements.canvas.classList.remove("is-repairing");
     dragState = null;
 
     if (completedDrag.role === "cut-range") {
@@ -3258,6 +4039,38 @@
         rememberPointer(event);
       } else {
         addOrRepairCut(VIEW.x0 + completedDrag.current * VIEW.moleculeWidth);
+        rememberPointer(event);
+      }
+      return;
+    }
+
+    if (completedDrag.role === "repair-range") {
+      if (event.type === "pointercancel") {
+        render();
+        clearPointerHover();
+      } else if (completedDrag.moved) {
+        commitRepairRange(completedDrag.anchor, completedDrag.current, completedDrag.startSnapshot);
+        rememberPointer(event);
+      } else {
+        repairBreakAtFraction(completedDrag.current, completedDrag.cutIndex);
+        rememberPointer(event);
+      }
+      return;
+    }
+
+    if (completedDrag.role === "canvas-gesture") {
+      if (event.type === "pointercancel") clearPointerHover();
+      else {
+        performCanvasClick(completedDrag.action, completedDrag.actionX);
+        rememberPointer(event);
+      }
+      return;
+    }
+
+    if (completedDrag.role === "pan") {
+      if (event.type === "pointercancel") clearPointerHover();
+      else {
+        if (completedDrag.moved) setStatus("View moved");
         rememberPointer(event);
       }
       return;
@@ -3389,11 +4202,13 @@
       background.setAttribute("y", fixed(y));
       background.setAttribute("width", fixed(width));
       background.setAttribute("height", fixed(height));
-      background.setAttribute("fill", state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor);
+      background.setAttribute("fill", canvasBackgroundColor());
       background.setAttribute("data-export-background", "true");
       svg.append(background);
     }
-    svg.append(artwork.cloneNode(true));
+    const clonedArtwork = artwork.cloneNode(true);
+    normaliseExportStrokeWidths(clonedArtwork);
+    svg.append(clonedArtwork);
     svg.querySelector("#rs-export-artwork")?.removeAttribute("id");
     return { element: svg, width, height };
   }
@@ -3404,6 +4219,25 @@
       ...exported,
       source: `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(exported.element)}`,
     };
+  }
+
+  function previewSvg() {
+    const exported = svgSource();
+    const url = URL.createObjectURL(new Blob([exported.source], { type: "image/svg+xml;charset=utf-8" }));
+    const previewWindow = typeof window.open === "function" ? window.open(url, "_blank") : null;
+    if (!previewWindow) {
+      URL.revokeObjectURL(url);
+      setStatus("SVG preview was blocked by the browser");
+      return false;
+    }
+    try {
+      previewWindow.opener = null;
+    } catch {
+      // The preview itself is already open; opener isolation is best-effort.
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setStatus("SVG preview opened in a new tab");
+    return true;
   }
 
   function downloadBlob(blob, filename) {
@@ -3601,12 +4435,13 @@
       const height = halfExtent * 2;
       const x = VIEW.width / 2 - width / 2;
       const y = VIEW.centerY - halfExtent;
+      const videoArtwork = withArtworkStrokeScale(1, () => artworkMarkup(model));
       const source = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}" width="${fixed(
         width
       )}" height="${fixed(height)}" preserveAspectRatio="xMidYMid meet">
   <title>Animated DNA replication diagram created with RepliSketch</title>
-  <g aria-label="DNA molecule" transform="${artworkAspectTransform(videoState)}">${artworkMarkup(model)}</g>
+  <g aria-label="DNA molecule" transform="${artworkAspectTransform(videoState)}">${videoArtwork}</g>
 </svg>`;
       return { source, width, height, model };
     });
@@ -3636,7 +4471,7 @@
         });
       }
 
-      context.fillStyle = videoState.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor;
+      context.fillStyle = canvasBackgroundColor(videoState);
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
     } finally {
@@ -4096,7 +4931,8 @@
 
   function resolvedTheme(mode = themeMode) {
     if (mode !== "system") return mode;
-    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return "light";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
 
   function applyTheme(mode, { persist = false } = {}) {
@@ -4123,6 +4959,10 @@
         // Theme persistence is optional in restricted browsing contexts.
       }
     }
+    if (state && elements.backgroundColorControl) {
+      elements.backgroundColorControl.value = backgroundControlColor(state);
+    }
+    if (state && elements.canvas) render();
   }
 
   function cycleTheme() {
@@ -4188,7 +5028,9 @@
       });
     }
     bindContinuousControl(elements.lengthControl, (value) => {
-      state.length = boundedLengthValue(value, state);
+      const nextLength = boundedLengthValue(value, state);
+      if (Math.abs(nextLength - state.length) > EPSILON) reseedBasePairSequence(state);
+      state.length = nextLength;
       resetForkPlaybackClock();
       render();
     });
@@ -4198,7 +5040,9 @@
       render();
     });
     bindContinuousControl(elements.pairResolutionControl, (value) => {
-      state.pairResolution = basePairResolution({ pairResolution: value });
+      const nextResolution = basePairResolution({ pairResolution: value });
+      if (nextResolution !== state.pairResolution) reseedBasePairSequence(state);
+      state.pairResolution = nextResolution;
       state.length = boundedLengthValue(state.length, state);
       resetForkPlaybackClock();
       syncControls();
@@ -4223,7 +5067,7 @@
       render();
     });
     bindContinuousControl(elements.speedControl, (value) => {
-      state.speed = playbackSpeed({ speed: value });
+      state.speed = playbackSpeedFromMultiplier(value);
       updateReadouts();
     });
     if (elements.newDnaStartDistanceControl) {
@@ -4273,6 +5117,17 @@
       state.basePairColorMode = BASE_PAIR_COLOR_MODES.has(elements.basePairColorModeControl.value)
         ? elements.basePairColorModeControl.value
         : DEFAULTS.basePairColorMode;
+      syncControls();
+      render();
+    });
+
+    elements.basePairTransitionControl.addEventListener("change", () => {
+      pushSnapshot();
+      state.advanced.basePairTransition = BASE_PAIR_TRANSITION_MODES.has(
+        elements.basePairTransitionControl.value
+      )
+        ? elements.basePairTransitionControl.value
+        : DEFAULTS.advanced.basePairTransition;
       syncControls();
       render();
     });
@@ -4332,7 +5187,7 @@
 
     elements.backgroundColorControl.addEventListener("pointerdown", beginControlChange);
     elements.backgroundColorControl.addEventListener("input", () => {
-      state.advanced.backgroundColor = elements.backgroundColorControl.value;
+      state.advanced.backgroundColor = configuredBackgroundColor(elements.backgroundColorControl.value);
       render();
     });
     elements.backgroundColorControl.addEventListener("change", finishControlChange);
@@ -4350,6 +5205,7 @@
       await loadConfigurationFile(file);
       elements.configFileInput.value = "";
     });
+    elements.previewButton.addEventListener("click", previewSvg);
     elements.downloadButton.addEventListener("click", () => {
       setDownloadMenu(elements.downloadMenu.hidden, !elements.downloadMenu.hidden);
     });
@@ -4376,9 +5232,10 @@
     elements.exportPdfButton.addEventListener("click", () => runDownload(exportPdf));
     elements.exportMp4Button.addEventListener("click", () => runDownload(exportMp4));
     elements.playButton.addEventListener("click", toggleAnimation);
-    elements.deleteOriginButton.addEventListener("click", deleteSelectedOrigin);
-    elements.clearCutsButton.addEventListener("click", clearCuts);
+    elements.deleteOriginsButton.addEventListener("click", deleteAllOrigins);
+    elements.deleteBreaksButton.addEventListener("click", deleteAllBreaks);
     elements.canvas.addEventListener("pointerdown", handlePointerDown);
+    elements.canvas.addEventListener("keydown", handleCanvasControlKeydown);
     elements.canvas.addEventListener("pointermove", handlePointerMove);
     elements.canvas.addEventListener("pointerup", endPointerDrag);
     elements.canvas.addEventListener("pointercancel", endPointerDrag);
@@ -4392,11 +5249,8 @@
     elements.zoomOutButton.addEventListener("click", () => setZoom(viewState.zoom / 1.25));
     elements.zoomInButton.addEventListener("click", () => setZoom(viewState.zoom * 1.25));
     elements.fitViewButton.addEventListener("click", resetView);
-    elements.aspectNarrowButton.addEventListener("click", () => changeArtworkAspect("x", -0.1));
-    elements.aspectWidenButton.addEventListener("click", () => changeArtworkAspect("x", 0.1));
-    elements.aspectShorterButton.addEventListener("click", () => changeArtworkAspect("y", -0.1));
-    elements.aspectTallerButton.addEventListener("click", () => changeArtworkAspect("y", 0.1));
-    elements.aspectResetButton.addEventListener("click", resetArtworkAspect);
+    bindContinuousControl(elements.aspectXControl, (value) => setArtworkAspectFromSlider("x", value));
+    bindContinuousControl(elements.aspectYControl, (value) => setArtworkAspectFromSlider("y", value));
 
     document.addEventListener("pointerdown", (event) => {
       if (!elements.downloadControl.contains(event.target)) closeDownloadMenu();
@@ -4411,7 +5265,7 @@
         refreshContextAction();
       }
       if (event.key === "Control" || event.key === "Meta") {
-        modifierState.pan = true;
+        modifierState.special = true;
         refreshContextAction();
       }
       if (modifier && ((key === "z" && event.shiftKey) || key === "y")) {
@@ -4443,12 +5297,12 @@
 
     document.addEventListener("keyup", (event) => {
       if (event.key === "Shift") modifierState.shift = false;
-      if (event.key === "Control" || event.key === "Meta") modifierState.pan = false;
+      if (event.key === "Control" || event.key === "Meta") modifierState.special = false;
       refreshContextAction();
     });
 
     window.addEventListener("blur", () => {
-      modifierState = { shift: false, pan: false };
+      modifierState = { shift: false, special: false };
       refreshContextAction();
     });
     window.addEventListener("beforeunload", () => {
@@ -4473,6 +5327,7 @@
       "saveConfigButton",
       "loadConfigButton",
       "configFileInput",
+      "previewButton",
       "downloadControl",
       "downloadButton",
       "downloadButtonLabel",
@@ -4488,8 +5343,8 @@
       "exportSvgButton",
       "exportPdfButton",
       "exportMp4Button",
-      "deleteOriginButton",
-      "clearCutsButton",
+      "deleteOriginsButton",
+      "deleteBreaksButton",
       "playButton",
       "playIcon",
       "playLabel",
@@ -4527,17 +5382,14 @@
       "fitViewButton",
       "zoomOutput",
       "aspectControls",
-      "aspectNarrowButton",
-      "aspectWidenButton",
-      "aspectResetButton",
-      "aspectShorterButton",
-      "aspectTallerButton",
-      "aspectOutput",
+      "aspectXControl",
+      "aspectYControl",
       "lengthStat",
       "originStat",
       "forkStat",
       "replicatedStat",
       "basePairColorModeControl",
+      "basePairTransitionControl",
       "basePairSingleColorOption",
       "baseIdentityColors",
       "templateAColor",

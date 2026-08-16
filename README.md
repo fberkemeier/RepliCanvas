@@ -24,15 +24,15 @@ Then open `http://localhost:8000/` in a current Chromium-based browser. Serving 
 
 ## How it works
 
-1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks. A fork becomes the selected, numbered object as soon as it is moved.
+1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks. The bulk buttons remove every origin or break, while a small red × appears on hover for deleting one item. A fork becomes the selected, numbered object as soon as it is moved.
 2. **Choose the visual language.** Switch between Standard, Straight, and Minimal; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape. Molecules can contain up to 500 displayed base pairs.
-3. **Colour base pairs.** Use one colour, split each rung between the colours of its connected strands, or assign separate A, T, G, and C colours to a stable shuffled sequence of correctly complementary base pairs.
-4. **Refine the geometry.** Advanced options control where new DNA begins behind each fork, the phase shift between connected helical strands, crossover cutouts, end/merge smoothing, base-pair snapping, the preview grid, and whether exports include the configured background.
+3. **Colour base pairs.** Use one colour, split each rung between the colours of its connected strands, or assign separate A, T, G, and C colours to a balanced shuffled sequence of correctly complementary base pairs. The sequence is regenerated whenever genomic length or base-pair resolution changes.
+4. **Refine the geometry.** Advanced options control where new DNA begins behind each fork, the phase shift between connected helical strands, crossover cutouts, end/merge smoothing, base-pair snapping, the preview grid, and whether exports include the configured background. Split-bubble clearance and merge/end smoothing use the same visual-clearance model, so fork transitions remain smooth as genomic length changes. When snapping is enabled, split forks and break endpoints are aligned to the base-pair lattice.
 5. **Explore S phase.** Move the S-phase slider or select **Run**. Discrete animation advances in base-pair steps at the same underlying fork speed as continuous playback while preserving origin firing order and manually adjusted fork timing.
 6. **Keep and revisit a design.** Save a configuration file, then load it later to continue editing every parameter, colour, origin, fork adjustment, and advanced option.
-7. **Navigate the canvas.** Hold <kbd>Ctrl</kbd> while dragging to pan, use the mouse wheel or zoom buttons to zoom from 10% to 400%, and use undo, redo, or reset whenever needed.
+7. **Navigate the canvas.** Drag the canvas to pan without changing the molecular controls; hold <kbd>Ctrl</kbd> to force panning anywhere. Use the mouse wheel or zoom buttons to zoom from 10% to 400%. The two aspect sliders below the zoom tools independently stretch the artwork horizontally and vertically, and Reset view restores both the camera and aspect.
 
-The menu beside **Download** provides links to the repository, documentation, issue tracker, and the System/Light/Dark theme control.
+The eye button opens the current SVG artwork alone in a new browser tab. **Download** exports an image or video, while **Menu** provides links to the repository, documentation, issue tracker, and the System/Light/Dark theme control. Dark theme adapts the canvas, legend, labels, and configured background while preserving the selected molecular colours and fixed project-link colours.
 
 ## Export
 

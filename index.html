@@ -64,11 +64,25 @@
             aria-label="Choose a RepliSketch configuration"
             hidden
           />
+          <button
+            class="rs-button rs-icon-button rs-preview-button"
+            id="previewButton"
+            type="button"
+            title="Preview SVG"
+            aria-label="Preview SVG in a new tab"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+              <circle cx="12" cy="12" r="2.8" />
+            </svg>
+          </button>
           <div class="rs-download" id="downloadControl">
             <button
               class="rs-button rs-button-primary rs-download-button"
               id="downloadButton"
               type="button"
+              title="Download image or video"
+              aria-label="Download image or video"
               aria-haspopup="menu"
               aria-expanded="false"
               aria-controls="downloadMenu"
@@ -80,7 +94,6 @@
               </svg>
               <span class="rs-button-spinner" id="downloadButtonSpinner" aria-hidden="true" hidden></span>
               <span id="downloadButtonLabel">Download</span>
-              <span class="rs-menu-chevron" aria-hidden="true">&#9662;</span>
             </button>
             <div class="rs-download-menu" id="downloadMenu" role="menu" hidden>
               <button id="exportPngButton" type="button" role="menuitem"><strong>PNG</strong><span>High-resolution raster, 2x</span></button>
@@ -94,8 +107,8 @@
               class="rs-button rs-icon-button rs-project-menu-button"
               id="projectMenuButton"
               type="button"
-              title="Project menu"
-              aria-label="Project menu"
+              title="Menu"
+              aria-label="Menu"
               aria-haspopup="menu"
               aria-expanded="false"
               aria-controls="projectMenu"
@@ -135,17 +148,41 @@
             </div>
 
             <div class="rs-control-guide" aria-label="Canvas controls">
-              <div><span class="rs-guide-symbol" aria-hidden="true">+</span><span>Add origin</span></div>
-              <div><span class="rs-guide-symbol" aria-hidden="true">&#8596;</span><span>Split bubble</span></div>
-              <div><span class="rs-guide-symbol rs-guide-origin" aria-hidden="true"><span></span></span><span>Drag bubble</span></div>
-              <div><span class="rs-guide-symbol rs-guide-fork" aria-hidden="true">&#8249;&nbsp;&#8250;</span><span>Drag fork</span></div>
-              <div><kbd>Shift</kbd><span>Cut / drag region</span></div>
-              <div><kbd>Ctrl</kbd><span>Move view</span></div>
+              <div>
+                <svg class="rs-guide-control rs-guide-context-control" viewBox="-14 -14 28 28" aria-hidden="true">
+                  <circle cx="0" cy="0" r="11" />
+                  <path d="M-4 0H4M0-4V4" />
+                </svg>
+                <span>Add origin</span>
+              </div>
+              <div>
+                <svg class="rs-guide-control rs-guide-split-control" viewBox="-14 -14 28 28" aria-hidden="true">
+                  <circle class="rs-guide-handle-disc" cx="0" cy="0" r="11" />
+                  <circle class="rs-guide-origin-dot" cx="0" cy="0" r="3.5" />
+                </svg>
+                <span>Split bubble</span>
+              </div>
+              <div>
+                <svg class="rs-guide-control rs-guide-origin-control" viewBox="-14 -14 28 28" aria-hidden="true">
+                  <circle class="rs-guide-handle-disc" cx="0" cy="0" r="11" />
+                  <path d="M-1.5-4.5L-6 0l4.5 4.5M1.5-4.5L6 0 1.5 4.5" />
+                </svg>
+                <span>Drag bubble</span>
+              </div>
+              <div>
+                <svg class="rs-guide-control rs-guide-fork-control" viewBox="-14 -14 28 28" aria-hidden="true">
+                  <circle class="rs-guide-handle-disc" cx="0" cy="0" r="11" />
+                  <path d="M-3-5L3 0-3 5" />
+                </svg>
+                <span>Drag fork</span>
+              </div>
+              <div><kbd>Shift</kbd><span>Break region</span></div>
+              <div><kbd>Ctrl</kbd><span>Special controls</span></div>
             </div>
 
             <div class="rs-inline-actions">
-              <button class="rs-text-button" id="deleteOriginButton" type="button" disabled>Delete origin</button>
-              <button class="rs-text-button" id="clearCutsButton" type="button" disabled>Clear cuts</button>
+              <button class="rs-text-button" id="deleteOriginsButton" type="button" disabled>Delete origins</button>
+              <button class="rs-text-button" id="deleteBreaksButton" type="button" disabled>Delete breaks</button>
             </div>
           </section>
 
@@ -166,9 +203,9 @@
             <div class="rs-range-control">
               <label for="lengthControl">
                 <span>Genomic length</span>
-                <output id="lengthOutput" for="lengthControl">72 bp</output>
+                <output id="lengthOutput" for="lengthControl">40 bp</output>
               </label>
-              <input id="lengthControl" type="range" min="10" max="625" step="5" value="90" />
+              <input id="lengthControl" type="range" min="10" max="625" step="5" value="50" />
             </div>
 
             <div class="rs-range-control">
@@ -182,33 +219,33 @@
             <div class="rs-range-control">
               <label for="basePairWidthControl">
                 <span>Base-pair width</span>
-                <output id="basePairWidthOutput" for="basePairWidthControl">1.8 px</output>
+                <output id="basePairWidthOutput" for="basePairWidthControl">5.0 px</output>
               </label>
-              <input id="basePairWidthControl" type="range" min="0.2" max="7" step="0.1" value="1.8" />
+              <input id="basePairWidthControl" type="range" min="0.2" max="16" step="0.1" value="5" />
             </div>
 
             <div class="rs-range-control">
               <label for="weightControl">
                 <span>Strand weight</span>
-                <output id="weightOutput" for="weightControl">4 px</output>
+                <output id="weightOutput" for="weightControl">6 px</output>
               </label>
-              <input id="weightControl" type="range" min="1" max="8" step="0.5" value="4" />
+              <input id="weightControl" type="range" min="1" max="20" step="0.5" value="6" />
             </div>
 
             <div class="rs-range-control">
               <label for="daughterSpacingControl">
                 <span>Replicated spacing</span>
-                <output id="daughterSpacingOutput" for="daughterSpacingControl">152 px</output>
+                <output id="daughterSpacingOutput" for="daughterSpacingControl">160 px</output>
               </label>
-              <input id="daughterSpacingControl" type="range" min="64" max="400" step="4" value="152" />
+              <input id="daughterSpacingControl" type="range" min="64" max="400" step="4" value="160" />
             </div>
 
             <div class="rs-range-control">
               <label for="doubleStrandHeightControl">
                 <span>Double-strand height</span>
-                <output id="doubleStrandHeightOutput" for="doubleStrandHeightControl">24 px</output>
+                <output id="doubleStrandHeightOutput" for="doubleStrandHeightControl">46 px</output>
               </label>
-              <input id="doubleStrandHeightControl" type="range" min="8" max="56" step="2" value="24" />
+              <input id="doubleStrandHeightControl" type="range" min="8" max="56" step="2" value="46" />
             </div>
           </section>
 
@@ -301,6 +338,13 @@
                   <input id="snapToBasePairsToggle" type="checkbox" />
                   <span class="rs-toggle-track" aria-hidden="true"></span>
                 </label>
+                <div class="rs-select-control rs-compact-select rs-options-select">
+                  <label for="basePairTransitionControl">Base-pair animation</label>
+                  <select id="basePairTransitionControl">
+                    <option value="fade" selected>Fade at forks</option>
+                    <option value="grow">Grow to midpoint</option>
+                  </select>
+                </div>
                 <label class="rs-toggle" for="includeExportBackgroundToggle">
                   <span>Include background in exports</span>
                   <input id="includeExportBackgroundToggle" type="checkbox" />
@@ -359,12 +403,12 @@
                 <span id="playLabel">Run</span>
               </button>
               <div class="rs-top-range rs-header-phase-control">
-                <label for="progressControl"><span>S phase</span><output id="progressOutput" for="progressControl">12%</output></label>
-                <input id="progressControl" type="range" min="0" max="100" step="1" value="12" />
+                <label for="progressControl"><span>S phase</span><output id="progressOutput" for="progressControl">0%</output></label>
+                <input id="progressControl" type="range" min="0" max="100" step="1" value="0" />
               </div>
               <div class="rs-top-range rs-header-speed-control">
-                <label for="speedControl"><span>Speed</span><output id="speedOutput" for="speedControl">1.0x</output></label>
-                <input id="speedControl" type="range" min="0.25" max="5" step="0.25" value="1" />
+                <label for="speedControl"><span>Speed</span><output id="speedOutput" for="speedControl">1x</output></label>
+                <input id="speedControl" type="range" min="0.25" max="3" step="0.25" value="1" />
               </div>
               <label class="rs-header-discrete-toggle" for="discreteAnimationToggle" title="Move every active fork one base pair at a time">
                 <input id="discreteAnimationToggle" type="checkbox" />
@@ -373,10 +417,10 @@
               </label>
             </div>
             <div class="rs-header-stats">
-              <div class="rs-stat"><span>Length</span><strong id="lengthStat">72 bp</strong></div>
+              <div class="rs-stat"><span>Length</span><strong id="lengthStat">40 bp</strong></div>
               <div class="rs-stat"><span>Origins</span><strong id="originStat">2</strong></div>
               <div class="rs-stat"><span>Forks</span><strong id="forkStat">4</strong></div>
-              <div class="rs-stat"><span>Replicated</span><strong id="replicatedStat">12%</strong></div>
+              <div class="rs-stat"><span>Replicated</span><strong id="replicatedStat">0%</strong></div>
             </div>
           </div>
 
@@ -388,30 +432,22 @@
               <button id="zoomOutButton" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
               <output id="zoomOutput" aria-live="polite">100%</output>
               <button id="zoomInButton" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
-              <button id="fitViewButton" type="button" title="Reset view" aria-label="Reset view">&#8596;</button>
+              <button id="fitViewButton" type="button" title="Fit current view" aria-label="Fit current view and reset aspect ratio">
+                <svg class="rs-fit-view-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" />
+                  <rect x="8" y="8" width="8" height="8" rx="1.5" />
+                </svg>
+              </button>
             </div>
             <div class="rs-aspect-controls" id="aspectControls" aria-label="Artwork aspect ratio">
-              <button id="aspectNarrowButton" type="button" title="Compress horizontally" aria-label="Compress horizontally">
-                <span aria-hidden="true">&#8596;&#8722;</span>
-              </button>
-              <button id="aspectWidenButton" type="button" title="Stretch horizontally" aria-label="Stretch horizontally">
-                <span aria-hidden="true">&#8596;&#43;</span>
-              </button>
-              <button
-                class="rs-aspect-reset"
-                id="aspectResetButton"
-                type="button"
-                title="Reset aspect ratio"
-                aria-label="Reset aspect ratio"
-              >
-                <output id="aspectOutput" aria-live="polite">100&times;100</output>
-              </button>
-              <button id="aspectShorterButton" type="button" title="Compress vertically" aria-label="Compress vertically">
-                <span aria-hidden="true">&#8597;&#8722;</span>
-              </button>
-              <button id="aspectTallerButton" type="button" title="Stretch vertically" aria-label="Stretch vertically">
-                <span aria-hidden="true">&#8597;&#43;</span>
-              </button>
+              <label class="rs-aspect-slider" for="aspectXControl" title="Horizontal aspect ratio">
+                <span class="rs-aspect-symbol" aria-hidden="true">&#8596;</span>
+                <input id="aspectXControl" type="range" min="-100" max="100" step="1" value="0" aria-label="Horizontal aspect ratio" />
+              </label>
+              <label class="rs-aspect-slider" for="aspectYControl" title="Vertical aspect ratio">
+                <span class="rs-aspect-symbol" aria-hidden="true">&#8597;</span>
+                <input id="aspectYControl" type="range" min="-100" max="100" step="1" value="0" aria-label="Vertical aspect ratio" />
+              </label>
             </div>
           </div>
 

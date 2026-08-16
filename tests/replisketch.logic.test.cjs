@@ -13,6 +13,8 @@ const html = fs.readFileSync(htmlPath, "utf8");
 const testApi = `
   globalThis.__replisketchTest = {
     VIEW,
+    BASE_PLAYBACK_SPEED,
+    SPEED_MULTIPLIER_RANGE,
     MAX_BASE_PAIR_COUNT,
     GRID_COLUMN_COUNT,
     MIN_ZOOM,
@@ -22,7 +24,10 @@ const testApi = `
     artworkAspectTransform,
     artworkAspectX,
     artworkAspectY,
+    aspectFactorFromSlider,
+    aspectSliderValue,
     artworkMarkup,
+    artworkColour,
     backgroundLuminance,
     basePairColorMode,
     basePairCount,
@@ -37,22 +42,32 @@ const testApi = `
     basePairForkDistanceFade,
     basePairForkInfluence,
     basePairTransitionInfluence,
+    basePairTransitionMode,
+    backgroundControlColor,
     boundedControlValue,
     boundedLengthValue,
     bubbleFromBounds,
     canvasGridColor,
     canvasInkColor,
+    canvasBackgroundColor,
+    contextGlyphMarkup,
+    canvasActionAtPoint,
     configurationDocument,
+    configuredBackgroundColor,
     connectedStrandShiftFraction,
     crossoverClipHalfWidth,
     crossoverSites,
+    cutInteractionFraction,
+    cutInteractionRange,
     cutRange,
     daughterDetailFade,
     doubleStrandHalfHeight,
     discreteAnimationEnabled,
     drawVideoFrame,
+    darkArtworkEnabled,
     displayedBasePairPositions,
     effectiveForkTravel,
+    effectiveTerminalSmoothing,
     encodeMp4WithMediabunnyCodec,
     findForkTravelForReplicatedFraction,
     fixedUiTransform,
@@ -66,8 +81,10 @@ const testApi = `
     genomicPositionAtFraction,
     helixWave,
     insetBasePairSegment,
+    invertHexColour,
     interactionHalfHeight,
     isCutGap,
+    latticeSpanFraction,
     makeVideoExportState,
     maximumLengthForBasePairCount,
     makeDefaultState,
@@ -83,12 +100,19 @@ const testApi = `
     nascentY,
     niceIntegerCeiling,
     normaliseStateSchema,
+    normaliseExportStrokeWidths,
     normaliseCutRegions,
     nextAvailableOriginId,
     nativeWebmMimeTypes,
+    parentalPairApproachFade,
     parentalPairFade,
     parseConfigurationText,
+    referenceBasePairSpacingPx,
+    referenceBasePairSubdivisionCount,
     playbackSpeed,
+    playbackSpeedFromMultiplier,
+    speedMultiplier,
+    speedMultiplierLabel,
     overlappingBubbleCluster,
     rawBubbleBounds,
     rebaseOriginDragAfterMerge,
@@ -100,6 +124,7 @@ const testApi = `
     renderBasePairLine,
     renderBasePairs,
     renderNascentDna,
+    reseedBasePairSequence,
     reseedNextOriginId,
     remuxWebmToMp4,
     rulerBasePairPosition,
@@ -117,6 +142,7 @@ const testApi = `
     setSPhaseTime,
     selectedForkDescriptor,
     setState(value) { state = value; },
+    setThemeMode(value) { themeMode = value; },
     setVideoExportBusy,
     setViewState(value) { viewState = value; },
     shouldMergeCompletedBubbleDrag,
@@ -124,8 +150,14 @@ const testApi = `
     snapEditingEnabled,
     snapForkTravel,
     snapFractionToBasePair,
+    subtractCutRange,
+    splitBubbleClearancePx,
+    splitBubbleGapSteps,
+    splitCompatibleCenterFraction,
+    splitBubbleDimensions,
     strandModel,
     strandPhaseShift,
+    stateArtworkColour,
     supportedMp4MimeType,
     synchroniseSPhaseFromGeometry,
     templateY,
@@ -134,14 +166,18 @@ const testApi = `
     terminalPullSpan,
     terminalSmoothing,
     terminalSmoothingLabel,
+    toolGuideBounds,
     transitionProfile,
     transitionTightness,
     transitionTightnessLabel,
+    updateCanvasLegend,
     regionEdgeTransitionWidth,
     regionTransitionWidth,
     visualReplicationAt,
     videoFramePlan,
     videoTravelAtFrame,
+    withArtworkStrokeScale,
+    artworkStrokeAttributes,
     worldTransform,
   };
 `;
@@ -177,6 +213,31 @@ const api = sandbox.__replisketchTest;
 
 function freshState() {
   const state = api.makeDefaultState();
+  Object.assign(state, {
+    length: 90,
+    progress: 12,
+    forkTravel: 0,
+    pairResolution: 3,
+    basePairWidth: 1.8,
+    weight: 4,
+    doubleStrandHeight: 24,
+    daughterSpacing: 152,
+    speed: 1,
+    discreteAnimation: false,
+    basePairColorMode: "single",
+    basePairSeed: 0x51f15e,
+    selectedOriginId: null,
+    selectedFork: null,
+  });
+  state.advanced = {
+    ...state.advanced,
+    snapToBasePairs: false,
+  };
+  state.origins = [
+    { id: "test-origin-1", position: 1 / 3, startPosition: 1 / 3, leftOffset: 0, rightOffset: 0 },
+    { id: "test-origin-2", position: 2 / 3, startPosition: 2 / 3, leftOffset: 0, rightOffset: 0 },
+  ];
+  state.forkTravel = api.findForkTravelForReplicatedFraction(state.progress, state);
   state.playing = false;
   return state;
 }
@@ -342,6 +403,44 @@ test("editing snaps to the centred parity-aware base-pair lattice", () => {
     null,
     "an interval containing no base-pair site must not create a continuous fallback"
   );
+});
+
+test("the attached 40-bp geometry starts at zero S phase with continuous editing", () => {
+  const state = JSON.parse(JSON.stringify(api.makeDefaultState()));
+  assert.equal(state.length, 50);
+  assert.equal(api.basePairCount(state), 40);
+  assert.equal(state.progress, 0);
+  assert.equal(state.forkTravel, 0);
+  assert.equal(state.pairResolution, 3);
+  assert.equal(state.basePairWidth, 5);
+  assert.equal(state.weight, 6);
+  assert.equal(state.doubleStrandHeight, 46);
+  assert.equal(state.daughterSpacing, 160);
+  assert.equal(state.speed, 2.75);
+  assert.equal(state.discreteAnimation, false);
+  assert.equal(state.basePairColorMode, "single");
+  assert.equal(state.basePairSeed, 3815474507);
+  assert.equal(state.advanced.snapToBasePairs, false);
+  assert.equal(state.advanced.backgroundColor, "#f8faf9");
+  assert.deepEqual(state.origins, [
+    {
+      id: "origin-6",
+      position: 0.3,
+      startPosition: 0.3,
+      leftOffset: 0,
+      rightOffset: 0,
+    },
+    {
+      id: "origin-5",
+      position: 0.7,
+      startPosition: 0.7,
+      leftOffset: 0,
+      rightOffset: 0,
+    },
+  ]);
+  assert.equal(state.selectedOriginId, "origin-6");
+  assert.equal(state.selectedFork, null);
+  assert.equal(api.replicatedFraction(api.getReplicationModelAtTravel(state.forkTravel, state)), 0);
 });
 
 test("the two initial origins are centred on integer base-pair sites", () => {
@@ -510,7 +609,7 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(low.weight, 1);
   assert.equal(low.daughterSpacing, 64);
   assert.equal(low.doubleStrandHeight, 8);
-  assert.equal(low.speed, 0.25);
+  assert.equal(low.speed, 2.75 * 0.25);
   assert.equal(low.advanced.terminalSmoothing, 0);
   assert.equal(low.advanced.transitionTightness, -100);
 
@@ -528,11 +627,11 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(high.length, 225);
   assert.equal(high.progress, 100);
   assert.equal(high.pairResolution, 10);
-  assert.equal(high.basePairWidth, 7);
-  assert.equal(high.weight, 8);
+  assert.equal(high.basePairWidth, 16);
+  assert.equal(high.weight, 20);
   assert.equal(high.daughterSpacing, 400);
   assert.equal(high.doubleStrandHeight, 56);
-  assert.equal(high.speed, 5);
+  assert.equal(high.speed, 2.75 * 3);
   assert.equal(high.advanced.terminalSmoothing, 6);
   assert.equal(high.advanced.transitionTightness, 100);
 
@@ -547,19 +646,19 @@ test("range-backed settings normalise imported values to the supported safe boun
     speed: 0,
     advanced: { terminalSmoothing: "invalid", transitionTightness: "invalid" },
   });
-  assert.equal(invalid.length, 90);
-  assert.equal(invalid.progress, 12);
+  assert.equal(invalid.length, 50);
+  assert.equal(invalid.progress, 0);
   assert.equal(invalid.pairResolution, 1);
-  assert.equal(invalid.basePairWidth, 1.8);
-  assert.equal(invalid.weight, 4);
-  assert.equal(invalid.daughterSpacing, 152);
-  assert.equal(invalid.doubleStrandHeight, 24);
-  assert.equal(invalid.speed, 1);
+  assert.equal(invalid.basePairWidth, 5);
+  assert.equal(invalid.weight, 6);
+  assert.equal(invalid.daughterSpacing, 160);
+  assert.equal(invalid.doubleStrandHeight, 46);
+  assert.equal(invalid.speed, 2.75);
   assert.equal(invalid.advanced.terminalSmoothing, 1.5);
   assert.equal(invalid.advanced.transitionTightness, 0);
 
-  assert.equal(api.playbackSpeed({ speed: -1 }), 1, "legacy non-positive speeds use the default");
-  assert.equal(api.playbackSpeed({ speed: 99 }), 5);
+  assert.equal(api.playbackSpeed({ speed: -1 }), 2.75, "legacy non-positive speeds use the default");
+  assert.equal(api.playbackSpeed({ speed: 99 }), 2.75 * 3);
   assert.equal(api.boundedControlValue("length", 2000), 1250);
   assert.equal(api.boundedLengthValue(2000, { pairResolution: 10, length: 90 }), 225);
 });
@@ -1335,8 +1434,15 @@ test("artwork aspect is persistent, pointer-correct, and shared by preview and v
   state.advanced.aspectX = 99;
   state.advanced.aspectY = 0.1;
   api.normaliseStateSchema(state);
-  assert.equal(state.advanced.aspectX, 2);
+  assert.equal(state.advanced.aspectX, 10);
   assert.equal(state.advanced.aspectY, 0.5);
+
+  assert.equal(api.aspectFactorFromSlider("x", 0), 1);
+  assert.equal(api.aspectFactorFromSlider("x", 100), 10);
+  assert.equal(api.aspectFactorFromSlider("x", -100), 0.1);
+  assert.equal(api.aspectFactorFromSlider("y", 100), 2);
+  assert.equal(api.aspectFactorFromSlider("y", -100), 0.5);
+  assert.ok(Math.abs(api.aspectSliderValue("x", { advanced: { aspectX: 1 } })) < 1e-12);
 });
 
 test("video export preserves the fork schedule in a canonical copy without mutating live settings", () => {
@@ -1685,42 +1791,38 @@ test("normal new-DNA endpoints use the exact profile threshold rather than a ste
   assert.ok(Math.abs(markupStart - span.fromX) < 1e-4);
 });
 
-test("terminal smoothing is measured on the parity-aware displayed base-pair lattice", () => {
+test("terminal smoothing preserves a reference visual distance as genomic density changes", () => {
   const state = freshState();
-  state.length = 90;
+  state.length = 50;
   state.pairResolution = 3;
   state.advanced.terminalSmoothing = 1.5;
   api.setState(state);
 
-  const defaultLattice = api.basePairLattice(state);
-  const defaultSpan = api.terminalPullSpan(0.5, "right", state);
+  assert.equal(api.referenceBasePairSubdivisionCount(), 40);
+  assert.equal(api.referenceBasePairSpacingPx(), api.VIEW.moleculeWidth / 40);
+  const referenceSpan = api.terminalPullSpan(0.5, "right", state);
   assert.equal(api.terminalSmoothing(state), 1.5);
+  assert.ok(Math.abs(api.effectiveTerminalSmoothing(state) - 1.5) < 1e-12);
   assert.equal(api.terminalSmoothingLabel(state), "1.5 bp");
-  assert.ok(
-    Math.abs(defaultSpan - (1.5 * api.VIEW.moleculeWidth) / defaultLattice.subdivisionCount) < 1e-12
-  );
-  const crossoverCount = defaultLattice.subdivisionCount / (state.pairResolution + 1);
-  const legacyHalfCrossoverSpan = api.VIEW.moleculeWidth / (crossoverCount * 2);
-  assert.ok(defaultSpan < legacyHalfCrossoverSpan, "the new default should begin closer than the former pull");
-  assert.ok(Math.abs(defaultSpan / legacyHalfCrossoverSpan - 0.75) < 1e-12);
+  assert.ok(Math.abs(referenceSpan - 1.5 * api.referenceBasePairSpacingPx()) < 1e-12);
 
   state.length = 180;
   const longerGenomeSpan = api.terminalPullSpan(0.5, "right", state);
-  assert.ok(Math.abs(longerGenomeSpan - defaultSpan / 2) < 1e-12);
+  assert.equal(longerGenomeSpan, referenceSpan, "a denser genome must retain the same on-screen pull distance");
+  assert.ok(api.effectiveTerminalSmoothing(state) > 1.5);
+  assert.equal(api.terminalSmoothingLabel(state), "5.4 bp");
 
   state.length = 90;
   state.pairResolution = 1;
   const lowResolutionSpan = api.terminalPullSpan(0.5, "right", state);
-  assert.ok(Math.abs(lowResolutionSpan - defaultSpan * 2) < 1e-12);
+  assert.equal(lowResolutionSpan, referenceSpan, "base-pair resolution must not collapse or expand the visual pull");
+  assert.equal(api.terminalSmoothingLabel(state), "1.35 bp");
 
   state.pairResolution = 2;
   const evenLattice = api.basePairLattice(state);
   const evenSpan = api.terminalPullSpan(0.37, "right", state);
   assert.equal(evenLattice.edgeOffset, 0.5);
-  assert.ok(
-    Math.abs((evenSpan * evenLattice.subdivisionCount) / api.VIEW.moleculeWidth - 1.5) < 1e-12,
-    "the centred half-step edge inset must not distort the configured genomic distance"
-  );
+  assert.equal(evenSpan, referenceSpan);
   assert.equal(evenSpan, api.terminalPullSpan(0.37, "left", state));
 });
 
@@ -2349,7 +2451,8 @@ test("video frame plan describes an exact 60 fps timeline", () => {
   for (const legacySpeed of [0, -1, "invalid"]) {
     state.speed = legacySpeed;
     const fallback = api.videoFramePlan(state);
-    assert.equal(fallback.travelPerFrame, plan.travelPerFrame);
+    const configuredFallback = api.videoFramePlan({ ...state, speed: 2.75 });
+    assert.equal(fallback.travelPerFrame, configuredFallback.travelPerFrame);
     assert.ok(fallback.lastFrameIndex > 0);
     assert.equal(api.videoTravelAtFrame(fallback, fallback.lastFrameIndex), fallback.completionTravel);
     assert.equal(api.replicatedFraction(api.getReplicationModelAtTravel(fallback.completionTravel, state)), 100);
@@ -2682,36 +2785,34 @@ test("advanced canvas controls and permanent hover controls are wired", () => {
   assert.match(css, /\.rs-fork-control-visual\s*\{[^}]*opacity:\s*0/s);
   assert.match(css, /\.rs-fork-handle:hover \.rs-fork-control-visual/);
   assert.match(css, /#dnaCanvas\.rs-show-all-controls \.rs-origin-visual/);
-  for (const id of [
-    "aspectControls",
-    "aspectNarrowButton",
-    "aspectWidenButton",
-    "aspectResetButton",
-    "aspectShorterButton",
-    "aspectTallerButton",
-    "aspectOutput",
-  ]) {
+  for (const id of ["aspectControls", "aspectXControl", "aspectYControl"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  assert.doesNotMatch(html, /aspectNarrowButton|aspectWidenButton|aspectResetButton|aspectOutput/);
+  assert.match(html, /id="aspectXControl"[^>]*min="-100"[^>]*max="100"[^>]*value="0"/);
+  assert.match(html, /id="aspectYControl"[^>]*min="-100"[^>]*max="100"[^>]*value="0"/);
   assert.match(css, /\.rs-canvas-frame:hover \.rs-aspect-controls/);
-  assert.match(css, /\.rs-aspect-controls:focus-within/);
+  assert.doesNotMatch(css, /\.rs-aspect-controls:focus-within/);
+  assert.match(css, /\.rs-aspect-controls:has\(:focus-visible\)/);
   assert.match(css, /@media \(hover: none\)[\s\S]*\.rs-aspect-controls/);
 });
 
 test("all range controls expose the expanded safe contracts and correct initial readouts", () => {
   const contracts = {
     progressControl: ["0", "100", "1"],
-    speedControl: ["0.25", "5", "0.25"],
+    speedControl: ["0.25", "3", "0.25"],
     lengthControl: ["10", "625", "5"],
     pairResolutionControl: ["1", "10", "1"],
-    basePairWidthControl: ["0.2", "7", "0.1"],
-    weightControl: ["1", "8", "0.5"],
+    basePairWidthControl: ["0.2", "16", "0.1"],
+    weightControl: ["1", "20", "0.5"],
     daughterSpacingControl: ["64", "400", "4"],
     doubleStrandHeightControl: ["8", "56", "2"],
     transitionTightnessControl: ["-100", "100", "1"],
     terminalSmoothingControl: ["0", "6", "0.25"],
     newDnaStartDistanceControl: ["0", "20", "0.25"],
     strandPhaseShiftControl: ["-5", "5", "0.25"],
+    aspectXControl: ["-100", "100", "1"],
+    aspectYControl: ["-100", "100", "1"],
   };
 
   for (const [id, [minimum, maximum, step]] of Object.entries(contracts)) {
@@ -2722,12 +2823,26 @@ test("all range controls expose the expanded safe contracts and correct initial 
     assert.match(tag, new RegExp(`step="${step.replace(".", "\\.")}"`));
   }
 
-  assert.match(html, /id="lengthOutput"[^>]*>72 bp</);
-  assert.match(html, /id="lengthStat"[^>]*>72 bp</);
+  assert.match(html, /id="lengthOutput"[^>]*>40 bp</);
+  assert.match(html, /id="lengthStat"[^>]*>40 bp</);
+  assert.match(html, /id="progressOutput"[^>]*>0%</);
+  assert.match(html, /id="speedOutput"[^>]*>1x</);
+  assert.match(html, /id="basePairWidthOutput"[^>]*>5\.0 px</);
+  assert.match(html, /id="weightOutput"[^>]*>6 px</);
+  assert.match(html, /id="doubleStrandHeightOutput"[^>]*>46 px</);
+  assert.match(html, /id="daughterSpacingOutput"[^>]*>160 px</);
   assert.match(html, /id="pairResolutionOutput"[^>]*>3 between crossovers</);
   assert.match(html, /id="terminalSmoothingOutput"[^>]*>1\.5 bp</);
   assert.match(html, /id="newDnaStartDistanceOutput"[^>]*>0 bp</);
   assert.match(html, /id="strandPhaseShiftOutput"[^>]*>0 bp</);
+  assert.match(html, /id="lengthControl"[^>]*value="50"/);
+  assert.match(html, /id="progressControl"[^>]*value="0"/);
+  assert.match(html, /id="speedControl"[^>]*value="1"/);
+  assert.match(html, /id="basePairWidthControl"[^>]*value="5"/);
+  assert.match(html, /id="weightControl"[^>]*value="6"/);
+  assert.match(html, /id="doubleStrandHeightControl"[^>]*value="46"/);
+  assert.match(html, /id="daughterSpacingControl"[^>]*value="160"/);
+  assert.doesNotMatch(html, /id="snapToBasePairsToggle"[^>]*checked/);
   assert.match(source, /const MAX_BASE_PAIR_COUNT = 500/);
   assert.match(source, /const MIN_ZOOM = 0\.1/);
   assert.match(html, /<section class="rs-control-section rs-compact-section">[\s\S]*?<h2>Controls<\/h2>/);
@@ -2763,8 +2878,12 @@ test("statusbar exposes compact project resources, version, selection, and lates
   assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliSketch"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch#readme"[\s\S]*aria-label="Documentation"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
-  assert.match(html, /class="rs-project-version">v1\.1\.0<\/span>/);
-  assert.match(css, /\.rs-project-version\s*\{[^}]*color:\s*var\(--rs-template-a\)/s);
+  assert.match(html, /class="rs-project-version">v1\.0\.0<\/span>/);
+  assert.match(css, /--rs-project-blue:\s*#3c9ab7/);
+  assert.match(css, /--rs-project-menu-blue:\s*#022851/);
+  assert.match(css, /\.rs-project-version\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*color:\s*var\(--rs-project-blue\)[^}]*font-weight:\s*400/s);
+  assert.match(css, /\.rs-project-link\s*\{[^}]*color:\s*var\(--rs-project-blue\)/s);
+  assert.doesNotMatch(css, /--rs-template-a/);
   assert.doesNotMatch(html, /<div class="rs-brand">[\s\S]*?rs-project-meta[\s\S]*?<\/div>\s*<div class="rs-top-actions"/);
   assert.match(
     html,
@@ -2773,9 +2892,21 @@ test("statusbar exposes compact project resources, version, selection, and lates
   assert.match(html, /class="rs-project-meta rs-status-project-meta"/);
   assert.match(html, /id="projectMenuButton"[\s\S]*aria-controls="projectMenu"/);
   assert.match(html, /id="projectMenu"[\s\S]*GitHub[\s\S]*Documentation[\s\S]*Raise an issue[\s\S]*Theme/);
+  assert.doesNotMatch(html, /rs-menu-chevron/);
+  assert.match(css, /\.rs-project-menu-button\s*\{[^}]*background:\s*var\(--rs-project-menu-blue\)[^}]*color:\s*#ffffff/s);
+  assert.match(css, /\.rs-project-menu-panel (?:a|button),[\s\S]*?color:\s*var\(--rs-ink\)/);
+  assert.match(css, /\.rs-topbar\s*\{[^}]*z-index:\s*100/s);
+  assert.match(css, /\.rs-body\s*\{[^}]*z-index:\s*0/s);
+  assert.match(css, /\.rs-download-menu\s*\{[^}]*z-index:\s*120/s);
+  assert.match(css, /\.rs-project-menu-panel\s*\{[^}]*z-index:\s*120/s);
+  assert.match(css, /\.rs-zoom-controls\s*\{[^}]*z-index:\s*3/s);
+  assert.match(css, /\.rs-zoom-controls output\s*\{[^}]*border-left:\s*1px solid var\(--rs-soft\)/s);
+  assert.match(css, /\.rs-aspect-controls\s*\{[^}]*z-index:\s*3/s);
+  assert.doesNotMatch(css, /\.rs-zoom-controls:focus-within|\.rs-aspect-controls:focus-within/);
   const lightbulbs = html.match(/M9 18h6M10 22h4M8\.5 15\.5/g) || [];
   assert.equal(lightbulbs.length, 2, "issue links in the menu and status bar must both use light bulbs");
-  assert.match(html, /rs-guide-fork[\s\S]*Drag fork/);
+  assert.match(html, /rs-guide-fork-control[\s\S]*M-3-5L3 0-3 5[\s\S]*Drag fork/);
+  assert.doesNotMatch(html, /&#8249;|&#8250;/);
 });
 
 test("browser metadata and configuration file actions are exposed accessibly", () => {
@@ -3007,6 +3138,24 @@ test("parental base-pair rungs fade at the fork instead of fanning into a bubble
   api.setState(state);
 
   const model = api.getReplicationModel();
+  const region = model.regions[0];
+  const leftForkX = api.VIEW.x0 + region.start * api.VIEW.moleculeWidth;
+  const nearUnreplicatedFade = api.parentalPairApproachFade(leftForkX - 1, model, state);
+  assert.ok(
+    nearUnreplicatedFade > 0 && nearUnreplicatedFade < 1,
+    "the final unreplicated rungs should fade as a fork approaches"
+  );
+  assert.equal(
+    api.parentalPairApproachFade(leftForkX, model, state),
+    0,
+    "a parental rung must disappear as soon as its position is crossed"
+  );
+  assert.equal(
+    api.parentalPairApproachFade(leftForkX - 60, model, state),
+    1,
+    "rungs well away from a fork should remain fully opaque"
+  );
+
   const renderedXs = new Set(
     [...api.renderBasePairs(model).matchAll(/<line x1="([\d.-]+)"/g)].map((match) => Number(match[1]))
   );
@@ -3037,7 +3186,7 @@ test("custom canvas backgrounds keep previews legible while static exports remai
   assert.match(css, /var\(--rs-grid-line/);
   assert.match(css, /var\(--rs-canvas-ink/);
   assert.match(source, /if \(state\.advanced\.includeExportBackground\)/);
-  assert.match(source, /background\.setAttribute\("fill", state\.advanced\.backgroundColor/);
+  assert.match(source, /background\.setAttribute\("fill", canvasBackgroundColor\(\)\)/);
   assert.equal(light.advanced.includeExportBackground, false, "static exports remain transparent by default");
   assert.match(source, /getContext\("2d", \{ alpha: true \}\)/);
   assert.match(source, /context\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
@@ -3057,6 +3206,52 @@ test("custom canvas backgrounds keep previews legible while static exports remai
   };
   await api.drawVideoFrame({ width: 320, height: 180 }, context, dark, 0);
   assert.equal(paintedBackground, "#000000");
+});
+
+test("dark theme preserves molecular colours while inverting the canvas, labels, and logo", () => {
+  const state = freshState();
+  state.colors.templateA = "#067e94";
+  state.colors.templateB = "#022851";
+  state.colors.newDna = "#8b1e2d";
+  state.colors.basePair = "#022851";
+  state.advanced.backgroundColor = "#f8faf9";
+  api.setState(state);
+  const canvasLegend = { hidden: false, innerHTML: "" };
+  api.setElements({ canvasLegend });
+
+  try {
+    api.setThemeMode("light");
+    assert.equal(api.stateArtworkColour("templateA", state), "#067e94");
+    assert.equal(api.canvasBackgroundColor(state), "#f8faf9");
+
+    api.setThemeMode("dark");
+    assert.equal(api.darkArtworkEnabled(), true);
+    assert.equal(api.invertHexColour("#067e94"), "#f9816b");
+    assert.equal(api.stateArtworkColour("templateA", state), "#067e94");
+    assert.equal(api.stateArtworkColour("templateB", state), "#022851");
+    assert.equal(api.stateArtworkColour("newDna", state), "#8b1e2d");
+    assert.equal(api.canvasBackgroundColor(state), "#070506");
+    assert.equal(api.canvasInkColor(state), "#eef5f3");
+    assert.match(api.canvasGridColor(state), /255, 255, 255/);
+
+    const markup = api.artworkMarkup(api.getReplicationModel());
+    assert.match(markup, /stroke="#067e94"/);
+    assert.match(markup, /stroke="#022851"/);
+    assert.match(markup, /stroke="#8b1e2d"/);
+
+    api.updateCanvasLegend();
+    assert.match(canvasLegend.innerHTML, /background:#067e94[^>]*><\/span>Template A/);
+    assert.match(canvasLegend.innerHTML, /background:#022851[^>]*><\/span>Template B/);
+    assert.match(canvasLegend.innerHTML, /background:#8b1e2d[^>]*><\/span>New strands/);
+    assert.equal(api.backgroundControlColor(state), "#070506");
+    assert.equal(api.configuredBackgroundColor("#070506"), "#f8faf9");
+
+    assert.equal(state.colors.templateA, "#067e94", "theme inversion must not mutate saved colours");
+    assert.equal(state.advanced.backgroundColor, "#f8faf9", "theme inversion must not mutate the configured background");
+  } finally {
+    api.setThemeMode("system");
+  }
+  assert.match(css, /html\[data-theme="dark"\] \.rs-brand-logo\s*\{[^}]*filter:\s*invert\(1\)/s);
 });
 
 
@@ -3105,7 +3300,7 @@ test("new-DNA fork distance augments rather than replaces the existing height-ba
   assert.equal(api.nascentSpan(terminalRegion, terminalModel).fromX, api.VIEW.x0);
 });
 
-test("base-pair colour modes preserve complementary A-T and G-C pairing with a stable shuffled sequence", () => {
+test("base-pair colour modes use balanced complementary pairs and reseed when sampling geometry changes", () => {
   const state = freshState();
   state.origins = [];
   state.colors = {
@@ -3126,6 +3321,13 @@ test("base-pair colour modes preserve complementary A-T and G-C pairing with a s
   assert.deepEqual([...labels].sort(), ["A-T", "G-C", "T-A", "C-G"].sort());
   const complement = { A: "T", T: "A", G: "C", C: "G" };
   assert.ok(identities.every(({ first, second }) => complement[first] === second));
+  for (let blockStart = 0; blockStart < identities.length; blockStart += 8) {
+    const blockCounts = Object.fromEntries(["A-T", "T-A", "G-C", "C-G"].map((label) => [label, 0]));
+    identities.slice(blockStart, blockStart + 8).forEach(({ label }) => {
+      blockCounts[label] += 1;
+    });
+    assert.deepEqual(blockCounts, { "A-T": 2, "T-A": 2, "G-C": 2, "C-G": 2 });
+  }
   assert.deepEqual(
     identities.slice(0, 20).map(({ label }) => label),
     Array.from({ length: 20 }, (_, index) => api.basePairIdentity(index, state).label),
@@ -3137,6 +3339,21 @@ test("base-pair colour modes preserve complementary A-T and G-C pairing with a s
     Array.from({ length: 20 }, (_, index) => api.basePairIdentity(index, reseeded).label),
     "changing the stored seed must produce a different shuffled sequence"
   );
+  const changedLength = { ...state, length: state.length + 5 };
+  const changedResolution = { ...state, pairResolution: state.pairResolution + 1 };
+  assert.notDeepEqual(
+    identities.slice(0, 32).map(({ label }) => label),
+    Array.from({ length: 32 }, (_, index) => api.basePairIdentity(index, changedLength).label),
+    "changing chromosome length must produce a new sequence"
+  );
+  assert.notDeepEqual(
+    identities.slice(0, 32).map(({ label }) => label),
+    Array.from({ length: 32 }, (_, index) => api.basePairIdentity(index, changedResolution).label),
+    "changing base-pair resolution must produce a new sequence"
+  );
+  const previousSeed = state.basePairSeed;
+  api.reseedBasePairSequence(state, previousSeed);
+  assert.notEqual(state.basePairSeed, previousSeed, "an explicit reseed must never retain the previous seed");
 
   state.basePairColorMode = "single";
   assert.deepEqual(Array.from(api.basePairLineColors("a", "b", "A", "T", state)), ["#444444", "#444444"]);
@@ -3153,10 +3370,22 @@ test("base-pair colour modes preserve complementary A-T and G-C pairing with a s
     firstBase: "A",
     secondBase: "T",
   });
-  assert.equal((twoColourLine.match(/<line\b/g) || []).length, 2);
+  assert.equal((twoColourLine.match(/<line\b/g) || []).length, 4);
   assert.match(twoColourLine, /data-pair="A-T"/);
   assert.match(twoColourLine, /stroke="#aa0000"/);
   assert.match(twoColourLine, /stroke="#00aa00"/);
+  assert.equal((twoColourLine.match(/stroke-linecap="butt"/g) || []).length, 2);
+  assert.equal((twoColourLine.match(/data-cap=/g) || []).length, 2);
+  assert.match(twoColourLine, /data-cap="first"[^>]*y1="20\.9000"[^>]*stroke-linecap="round"/);
+  assert.match(twoColourLine, /data-cap="second"[^>]*y1="59\.1000"[^>]*stroke-linecap="round"/);
+  assert.match(twoColourLine, /y1="20\.9000"[^>]*y2="40\.0000"/);
+  assert.match(twoColourLine, /y1="40\.0000"[^>]*y2="59\.1000"/);
+
+  state.basePairColorMode = "single";
+  const opaquePairs = api.renderBasePairs(api.getReplicationModel());
+  const opacities = [...opaquePairs.matchAll(/opacity="([\d.]+)"/g)].map((match) => Number(match[1]));
+  assert.ok(opacities.length > 0);
+  assert.ok(opacities.every((opacity) => opacity === 1), "stable base-pair rungs must be fully opaque");
 });
 
 test("connected-strand phase shifts move the partner waveform and crossover clips without tilting base pairs", () => {
@@ -3184,8 +3413,22 @@ test("connected-strand phase shifts move the partner waveform and crossover clip
   assert.ok(lines.length > 0);
   assert.ok(lines.every((match) => match[1] === match[2]), "base pairs must remain vertical after the phase shift");
 
+  state.length = 50;
   state.advanced.aspectX = 1;
   const normalClip = api.crossoverClipHalfWidth(1.8, 7, state);
+  state.length = 100;
+  const longerGenomeClip = api.crossoverClipHalfWidth(1.8, 7, state);
+  assert.ok(longerGenomeClip < normalClip, "crossover cutouts must shrink with increasing genome length");
+  assert.ok(
+    Math.abs(longerGenomeClip * 2 - normalClip) < 1e-12,
+    "before the strand-safety floor, cutouts scale inversely with genome length"
+  );
+  state.length = 1000;
+  assert.ok(
+    api.crossoverClipHalfWidth(1.8, 7, state) >= state.weight / 2 + 0.5,
+    "dense crossover cutouts must remain wide enough to hide round strand caps"
+  );
+  state.length = 50;
   state.advanced.aspectX = 2;
   const widenedClip = api.crossoverClipHalfWidth(1.8, 7, state);
   assert.ok(Math.abs(widenedClip * 2 - normalClip) < 1e-12, "clip width must counteract horizontal aspect scaling");
@@ -3294,7 +3537,7 @@ test("the fixed preview grid spans both genomic endpoints independently of base-
   assert.doesNotMatch(source, /--rs-grid-x[^\n]*basePairResolution/);
 });
 
-test("playback, project, aspect, and control-guide layout matches the refined interface", () => {
+test("playback, menu, aspect, and control-guide layout matches the refined interface", () => {
   const header = html.match(/<div class="rs-canvas-header">([\s\S]*?)<div class="rs-canvas-frame"/)?.[1] || "";
   assert.ok(header.indexOf("rs-header-playback") >= 0);
   assert.ok(header.indexOf("rs-header-playback") < header.indexOf("rs-header-stats"));
@@ -3307,9 +3550,327 @@ test("playback, project, aspect, and control-guide layout matches the refined in
   assert.ok(guide.indexOf("Split bubble") < guide.indexOf("Shift"));
   assert.ok(guide.indexOf("Drag bubble") < guide.indexOf("Shift"));
   assert.ok(guide.indexOf("Drag fork") < guide.indexOf("Shift"));
-  assert.doesNotMatch(guide, /Wheel zoom/);
+  assert.match(guide, /Break region/);
+  assert.match(guide, /Special controls/);
+  assert.doesNotMatch(guide, /Wheel zoom|Cut \/ drag region/);
+
+  const guideSvgs = [...guide.matchAll(/<svg[\s\S]*?<\/svg>/g)].map((match) => match[0]);
+  assert.equal(guideSvgs.length, 4);
+  guideSvgs.forEach((svg) => assert.match(svg, /<circle[^>]*r="11"/));
+  assert.match(guideSvgs[1], /rs-guide-split-control/);
+  assert.match(guideSvgs[1], /rs-guide-origin-dot/);
+  assert.doesNotMatch(guideSvgs[1], /M-1\.5-4\.5L-6 0l4\.5 4\.5M1\.5-4\.5L6 0 1\.5 4\.5/);
+  assert.match(guideSvgs[2], /M-1\.5-4\.5L-6 0l4\.5 4\.5M1\.5-4\.5L6 0 1\.5 4\.5/);
 
   assert.match(css, /\.rs-zoom-controls\s*\{[\s\S]*?width:\s*154px;/);
-  assert.match(css, /\.rs-aspect-controls\s*\{[^}]*top:\s*52px;[^}]*right:\s*12px;[^}]*width:\s*154px;/s);
+  assert.match(css, /\.rs-aspect-controls\s*\{[^}]*top:\s*52px;[^}]*right:\s*12px;[^}]*width:\s*154px;[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(css, /\.rs-aspect-slider\s*\{[^}]*grid-template-columns:\s*20px minmax\(0, 1fr\)/s);
+  assert.doesNotMatch(html, /id="aspectOutput"/);
   assert.match(source, /const MIN_ZOOM = 0\.1/);
+  assert.match(source, /aspectX:\s*\{ min: 0\.1, max: 10 \}/);
+  assert.match(source, /function resetView\(\)[\s\S]*state\.advanced\.aspectX = 1;[\s\S]*state\.advanced\.aspectY = 1;/);
+});
+
+test("split-bubble spacing preserves merge clearance across genomic lengths", () => {
+  const shortState = freshState();
+  shortState.length = 50;
+  shortState.pairResolution = 3;
+  shortState.advanced.snapToBasePairs = false;
+  api.normaliseStateSchema(shortState);
+  const longState = JSON.parse(JSON.stringify(shortState));
+  longState.length = 625;
+  api.normaliseStateSchema(longState);
+  const region = { start: 0.1, end: 0.9 };
+  const shortDimensions = api.splitBubbleDimensions(region, shortState);
+  const longDimensions = api.splitBubbleDimensions(region, longState);
+
+  assert.equal(api.terminalPullSpan(0.5, "right", shortState), api.terminalPullSpan(0.5, "right", longState));
+  assert.equal(shortDimensions.targetGapPx, api.splitBubbleClearancePx(shortState));
+  assert.equal(longDimensions.targetGapPx, api.splitBubbleClearancePx(longState));
+  assert.equal(shortDimensions.targetGapPx, longDimensions.targetGapPx);
+  assert.ok(Math.abs(shortDimensions.gap * api.VIEW.moleculeWidth - shortDimensions.targetGapPx) < 1e-9);
+  assert.ok(Math.abs(longDimensions.gap * api.VIEW.moleculeWidth - longDimensions.targetGapPx) < 1e-9);
+  assert.equal(shortDimensions.gap, longDimensions.gap, "continuous splitting should retain identical visual clearance");
+  assert.ok(longDimensions.gapSteps > shortDimensions.gapSteps, "denser genomes require more discrete sites for the same clearance");
+  assert.ok(api.effectiveTerminalSmoothing(longState) > api.effectiveTerminalSmoothing(shortState));
+
+  [shortState, longState].forEach((continuousState) => {
+    const candidateState = JSON.parse(JSON.stringify(continuousState));
+    candidateState.advanced.snapToBasePairs = true;
+    api.normaliseStateSchema(candidateState);
+    const dimensions = api.splitBubbleDimensions(region, candidateState);
+    const pairStep = api.basePairStepFraction(candidateState);
+    assert.ok(dimensions.gap >= dimensions.targetGap - 1e-12);
+    assert.ok(dimensions.gap - dimensions.targetGap < pairStep + 1e-12);
+    assert.ok(Math.abs(dimensions.gap / pairStep - dimensions.gapSteps) < 1e-10);
+
+    const center = api.splitCompatibleCenterFraction(0.503, dimensions.gapSteps, candidateState, {
+      min: region.start + dimensions.minimumWidth + dimensions.gap / 2,
+      max: region.end - dimensions.minimumWidth - dimensions.gap / 2,
+    });
+    assert.notEqual(center, null);
+    const leftEnd = center - dimensions.gap / 2;
+    const rightStart = center + dimensions.gap / 2;
+    const lattice = api.basePairLattice(candidateState);
+    const leftCoordinate = leftEnd * lattice.subdivisionCount - lattice.edgeOffset;
+    const rightCoordinate = rightStart * lattice.subdivisionCount - lattice.edgeOffset;
+    assert.ok(Math.abs(leftCoordinate - Math.round(leftCoordinate)) < 1e-9);
+    assert.ok(Math.abs(rightCoordinate - Math.round(rightCoordinate)) < 1e-9);
+    assert.ok(Math.abs(rightCoordinate - leftCoordinate - dimensions.gapSteps) < 1e-9);
+  });
+});
+
+test("break points and dragged break regions follow the editing lattice when snapping is enabled", () => {
+  const continuousState = freshState();
+  continuousState.advanced.snapToBasePairs = false;
+  api.normaliseStateSchema(continuousState);
+  const snappedState = JSON.parse(JSON.stringify(continuousState));
+  snappedState.advanced.snapToBasePairs = true;
+  api.normaliseStateSchema(snappedState);
+
+  const rawStart = 0.2137;
+  const rawEnd = 0.6842;
+  assert.equal(api.cutInteractionFraction(rawStart, continuousState), rawStart);
+  const continuousRange = api.cutInteractionRange(rawStart, rawEnd, continuousState);
+  assert.equal(continuousRange.start, rawStart);
+  assert.equal(continuousRange.end, rawEnd);
+
+  const snappedStart = api.cutInteractionFraction(rawStart, snappedState);
+  const snappedRange = api.cutInteractionRange(rawStart, rawEnd, snappedState);
+  assert.equal(snappedStart, api.snapFractionToBasePair(rawStart, snappedState));
+  assert.equal(snappedRange.start, api.snapFractionToBasePair(rawStart, snappedState));
+  assert.equal(snappedRange.end, api.snapFractionToBasePair(rawEnd, snappedState));
+  assert.notEqual(snappedRange.start, rawStart);
+  assert.notEqual(snappedRange.end, rawEnd);
+});
+
+test("bulk delete buttons and per-item hover delete controls are wired separately", () => {
+  assert.match(html, /id="deleteOriginsButton"[^>]*>Delete origins<\/button>/);
+  assert.match(html, /id="deleteBreaksButton"[^>]*>Delete breaks<\/button>/);
+  assert.doesNotMatch(html, /id="deleteOriginButton"|id="clearCutsButton"/);
+  assert.match(source, /"delete-origin"/);
+  assert.match(source, /"delete-cut"/);
+  assert.match(source, /function deleteAllOrigins\(\)/);
+  assert.match(source, /function deleteAllBreaks\(\)/);
+  assert.match(source, /function deleteOriginById\(originId\)/);
+  assert.match(source, /function deleteCutByIndex\(index\)/);
+  assert.match(source, /function handleCanvasControlKeydown\(event\)/);
+  assert.match(source, /elements\.canvas\.addEventListener\("keydown", handleCanvasControlKeydown\)/);
+  assert.match(css, /\.rs-origin-control-cluster:hover \.rs-item-delete-control/);
+  assert.match(css, /\.rs-cut-marker:not\(\.is-preview\):hover \.rs-item-delete-control/);
+});
+
+test("default canvas panning defers to add, split, origin, and fork controls", () => {
+  const state = freshState();
+  api.setState(state);
+  const model = api.getReplicationModel();
+  const unreplicatedPoint = { x: api.VIEW.x0 + api.VIEW.moleculeWidth * 0.02, y: api.VIEW.centerY };
+  const firstRegion = model.regions[0];
+  const replicatedPoint = {
+    x: api.VIEW.x0 + api.VIEW.moleculeWidth * ((firstRegion.start + firstRegion.end) / 2),
+    y: api.VIEW.centerY,
+  };
+
+  assert.equal(api.canvasActionAtPoint(unreplicatedPoint, null, model), "add");
+  assert.equal(api.canvasActionAtPoint(replicatedPoint, null, model), "split");
+  assert.equal(api.canvasActionAtPoint(replicatedPoint, "origin", model), null);
+  assert.equal(api.canvasActionAtPoint(replicatedPoint, "fork", model), null);
+  assert.equal(api.canvasActionAtPoint({ ...replicatedPoint, y: 20 }, null, model), null);
+  assert.match(source, /function beginCanvasGesture/);
+  assert.match(source, /dragState\.role = "pan"/);
+  assert.match(source, /Direct origin\/fork controls are handled below/);
+});
+
+test("preview, download, and menu actions are ordered and described", () => {
+  const topbar = html.match(/<header class="rs-topbar">([\s\S]*?)<\/header>/)?.[1] || "";
+  assert.ok(topbar.indexOf('id="previewButton"') < topbar.indexOf('id="downloadControl"'));
+  assert.ok(topbar.indexOf('id="downloadControl"') < topbar.indexOf('id="projectMenuControl"'));
+  assert.match(html, /id="previewButton"[^>]*title="Preview SVG"[^>]*aria-label="Preview SVG in a new tab"/);
+  assert.match(html, /id="downloadButton"[^>]*title="Download image or video"[^>]*aria-label="Download image or video"/);
+  assert.match(html, /id="projectMenuButton"[^>]*title="Menu"[^>]*aria-label="Menu"/);
+  assert.match(css, /\.rs-preview-button\s*\{[^}]*flex:\s*0 0 38px/s);
+  assert.match(source, /function previewSvg\(\)/);
+  assert.match(source, /window\.open\(url, "_blank"\)/);
+});
+
+test("selected origins and forks never force hidden canvas controls to remain visible", () => {
+  assert.doesNotMatch(css, /\.rs-fork-handle\.is-selected \.rs-fork-control-visual/);
+  assert.doesNotMatch(css, /\.rs-origin-marker\.is-selected \.rs-origin-visual/);
+  assert.match(css, /\.rs-fork-handle:hover \.rs-fork-control-visual/);
+  assert.match(css, /\.rs-fork-handle\.is-dragged \.rs-fork-control-visual/);
+  assert.match(css, /#dnaCanvas\.rs-show-all-controls \.rs-fork-control-visual/);
+  assert.match(css, /\.rs-origin-marker:hover \.rs-origin-visual/);
+  assert.match(css, /#dnaCanvas\.rs-show-all-controls \.rs-origin-visual/);
+  assert.match(source, /const selectionRing = selected[\s\S]*?<g class="rs-fork-control-visual">[\s\S]*?\$\{selectionRing\}/);
+});
+
+test("base-pair transition mode supports opaque growth from both strands to the midpoint", () => {
+  const state = freshState();
+  state.basePairColorMode = "bases";
+  state.colors.adenine = "#aa0000";
+  state.colors.thymine = "#00aa00";
+  state.advanced.basePairTransition = "grow";
+  api.setState(state);
+
+  assert.equal(api.basePairTransitionMode(state), "grow");
+  const half = api.renderBasePairLine(100, 20, 60, 0.5, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(half, /opacity="1\.0000"/);
+  assert.match(half, /y1="20\.9000"[^>]*y2="30\.4500"[^>]*data-half="first"/);
+  assert.match(half, /y1="49\.5500"[^>]*y2="59\.1000"[^>]*data-half="second"/);
+  assert.match(half, /data-cap="first"[^>]*stroke-linecap="round"/);
+  assert.match(half, /data-cap="second"[^>]*stroke-linecap="round"/);
+
+  const complete = api.renderBasePairLine(100, 20, 60, 1, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(complete, /y2="40\.0000"[^>]*data-half="first"/);
+  assert.match(complete, /y1="40\.0000"[^>]*data-half="second"/);
+
+  state.advanced.basePairTransition = "fade";
+  const faded = api.renderBasePairLine(100, 20, 60, 0.4, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(faded, /opacity="0\.4000"/);
+  assert.match(html, /id="basePairTransitionControl"[\s\S]*?<option value="fade" selected>Fade at forks<\/option>[\s\S]*?<option value="grow">Grow to midpoint<\/option>/);
+  assert.doesNotMatch(html, /id="growBasePairsToggle"/);
+});
+
+test("the displayed speed multiplier maps the historical 2.75 pace to one times", () => {
+  assert.equal(api.BASE_PLAYBACK_SPEED, 2.75);
+  assert.deepEqual(Array.from(Object.values(api.SPEED_MULTIPLIER_RANGE)), [0.25, 3]);
+  assert.equal(api.playbackSpeedFromMultiplier(0.25), 0.6875);
+  assert.equal(api.playbackSpeedFromMultiplier(1), 2.75);
+  assert.equal(api.playbackSpeedFromMultiplier(3), 8.25);
+  assert.equal(api.speedMultiplier({ speed: 2.75 }), 1);
+  assert.equal(api.speedMultiplier({ speed: 8.25 }), 3);
+  assert.equal(api.speedMultiplierLabel({ speed: 2.75 }), "1x");
+  assert.equal(api.makeDefaultState().speed, 2.75);
+});
+
+test("Ctrl fork dragging moves the two active forks symmetrically around a fixed origin", () => {
+  const state = freshState();
+  state.origins = [{ id: "mirror", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+  state.forkTravel = 0.1;
+  state.advanced.snapToBasePairs = false;
+  api.setState(state);
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+
+  const result = api.applyForkDragPosition(
+    {
+      role: "fork",
+      side: "right",
+      originId: "mirror",
+      originStartPosition: 0.5,
+      leftPosition: 0.4,
+      rightPosition: 0.6,
+      pairedForks: true,
+      mirroredForks: true,
+      collapsePending: false,
+    },
+    0.72,
+    state
+  );
+  assert.ok(result);
+  assert.equal(result.mirrored, true);
+  const geometry = api.getReplicationModelAtTravel(state.forkTravel, state).origins[0];
+  assert.ok(Math.abs(geometry.leftPosition - 0.28) < 1e-10);
+  assert.ok(Math.abs(geometry.rightPosition - 0.72) < 1e-10);
+  assert.ok(Math.abs((geometry.leftPosition + geometry.rightPosition) / 2 - 0.5) < 1e-10);
+  assert.equal(state.origins[0].startPosition, 0.5);
+  assert.match(source, /mirroredForks:\s*role === "fork" && specialControl/);
+  assert.match(source, /Both forks adjusted symmetrically/);
+});
+
+test("Ctrl repair gestures subtract any selected interval from one or more break regions", () => {
+  const repaired = api.subtractCutRange(
+    [
+      { start: 0.1, end: 0.4 },
+      { start: 0.6, end: 0.8 },
+    ],
+    { start: 0.2, end: 0.7 }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(repaired)).map(({ start, end }) => [start, end]),
+    [
+      [0.1, 0.2],
+      [0.7, 0.8],
+    ]
+  );
+  assert.match(source, /function beginRepairRange\(event, x, cutIndex = -1\)/);
+  assert.match(source, /specialControl && role !== "fork" && role !== "origin"/);
+  assert.match(source, /beginRepairRange\(event, point\.x, cutIndex\)/);
+  assert.match(source, /commitRepairRange\(completedDrag\.anchor, completedDrag\.current/);
+  assert.doesNotMatch(
+    source.match(/if \(specialControl && role !== "fork" && role !== "origin"\) \{[\s\S]*?\n    \}/)?.[0] || "",
+    /beginPan/
+  );
+});
+
+test("artwork aspect transforms preserve strand and base-pair stroke thickness", () => {
+  const state = freshState();
+  state.basePairWidth = 4;
+  state.weight = 7;
+  state.advanced.aspectX = 1;
+  state.advanced.aspectY = 1;
+  api.setState(state);
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+  const normalInset = api.insetBasePairSegment(20, 60, 4);
+  const normalAttributes = api.artworkStrokeAttributes(7);
+
+  state.advanced.aspectX = 10;
+  state.advanced.aspectY = 2;
+  const stretchedInset = api.insetBasePairSegment(20, 60, 4);
+  const stretchedAttributes = api.artworkStrokeAttributes(7);
+  assert.equal(normalAttributes, stretchedAttributes);
+  assert.match(stretchedAttributes, /stroke-width="7\.0"/);
+  assert.match(stretchedAttributes, /data-rs-stroke-width="7\.0"/);
+  assert.match(stretchedAttributes, /vector-effect="non-scaling-stroke"/);
+  assert.ok(Math.abs((normalInset.firstY - 20) - (stretchedInset.firstY - 20) * 2) < 1e-10);
+
+  const zoomed = api.withArtworkStrokeScale(2, () => api.artworkStrokeAttributes(7));
+  assert.match(zoomed, /stroke-width="14\.0"/);
+  assert.match(zoomed, /data-rs-stroke-width="7\.0"/);
+  assert.match(source, /normaliseExportStrokeWidths\(clonedArtwork\)/);
+});
+
+test("context controls swap split and drag icons, clear stale glyphs, and span beyond daughter strands", () => {
+  const state = freshState();
+  api.setState(state);
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+  const splitGlyph = api.contextGlyphMarkup("split", "#123456");
+  const addGlyph = api.contextGlyphMarkup("add", "#123456");
+  assert.match(splitGlyph, /<circle[^>]*r="3\.8"/);
+  assert.doesNotMatch(splitGlyph, /M-5 0H5/);
+  assert.match(addGlyph, /M-5 0H5M0-5V5/);
+  assert.match(source, /if \(glyph\) glyph\.replaceChildren\(\)/);
+  assert.doesNotMatch(source, /id="rs-context-split-glyph"/);
+  assert.match(source, /<g id="rs-context-glyph"><\/g>/);
+  assert.match(source, /M-1\.5-4\.5L-6 0l4\.5 4\.5M1\.5-4\.5L6 0 1\.5 4\.5/);
+
+  const bounds = api.toolGuideBounds(state);
+  const molecularHalfExtent = state.daughterSpacing / 2 + state.doubleStrandHeight / 2;
+  assert.ok(bounds.top < api.VIEW.centerY - molecularHalfExtent);
+  assert.ok(bounds.bottom > api.VIEW.centerY + molecularHalfExtent);
+  assert.match(source, /line\.setAttribute\("y1", fixed\(guideBounds\.top\)\)/);
+  assert.match(source, /line\.setAttribute\("y2", fixed\(guideBounds\.bottom\)\)/);
+});
+
+test("the fit-view control uses a framed artwork icon and resets both aspect axes", () => {
+  const fitButton = html.match(/<button id="fitViewButton"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(fitButton, /title="Fit current view"/);
+  assert.match(fitButton, /class="rs-fit-view-icon"/);
+  assert.match(fitButton, /<rect x="8" y="8" width="8" height="8" rx="1\.5"/);
+  assert.match(fitButton, /M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5/);
+  assert.match(source, /function resetView\(\)[\s\S]*state\.advanced\.aspectX = 1;[\s\S]*state\.advanced\.aspectY = 1;/);
 });
