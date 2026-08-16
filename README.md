@@ -14,26 +14,40 @@ RepliSketch is a lightweight, browser-based studio for drawing, exploring, and a
 
 Open the [live RepliSketch app](https://fberkemeier.github.io/RepliSketch/). No installation or build step is required.
 
+To test a local copy, serve the repository over localhost from its root directory:
+
+```bash
+python -m http.server 8000
+```
+
+Then open `http://localhost:8000/` in a current Chromium-based browser. Serving over localhost, rather than opening `index.html` directly, gives the animation encoder and file-saving APIs the most reliable browser context.
+
 ## How it works
 
-1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks.
-2. **Choose the visual language.** Switch between Standard, Schematic duplex, and Minimal lines; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape.
-3. **Explore S phase.** Move the S-phase slider or select **Run**. Choose discrete animation to advance one base pair at a time; RepliSketch preserves origin firing order and manually adjusted fork timing.
-4. **Keep and revisit a design.** Save a configuration file, then load it later to continue editing every parameter and origin.
-5. **Navigate the canvas.** Hold <kbd>Ctrl</kbd> while dragging to pan, use the mouse wheel to zoom, and use undo, redo, or reset whenever needed.
+1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks. A fork becomes the selected, numbered object as soon as it is moved.
+2. **Choose the visual language.** Switch between Standard, Schematic duplex, and Minimal lines; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape. Molecules can contain up to 500 displayed base pairs.
+3. **Colour base pairs.** Use one colour, split each rung between the colours of its connected strands, or assign separate A, T, G, and C colours to a stable shuffled sequence of correctly complementary base pairs.
+4. **Refine the geometry.** Advanced options control where new DNA begins behind each fork, the phase shift between connected helical strands, crossover cutouts, end/merge smoothing, base-pair snapping, the preview grid, and whether exports include the configured background.
+5. **Explore S phase.** Move the S-phase slider or select **Run**. Discrete animation advances in base-pair steps at the same underlying fork speed as continuous playback while preserving origin firing order and manually adjusted fork timing.
+6. **Keep and revisit a design.** Save a configuration file, then load it later to continue editing every parameter, colour, origin, fork adjustment, and advanced option.
+7. **Navigate the canvas.** Hold <kbd>Ctrl</kbd> while dragging to pan, use the mouse wheel or zoom buttons to zoom from 10% to 400%, and use undo, redo, or reset whenever needed.
+
+The menu beside **Download** provides links to the repository, documentation, issue tracker, and the System/Light/Dark theme control.
 
 ## Export
 
-- **PNG** — transparent high-resolution raster image
-- **SVG** — transparent editable vector artwork
-- **PDF** — transparent print-ready vector artwork
+- **PNG** — tightly cropped high-resolution raster image
+- **SVG** — tightly cropped editable vector artwork
+- **PDF** — tightly cropped print-ready vector artwork
 - **MP4** — 60 fps animation of the complete configured replication timeline
 
-A current Chromium-based browser provides the most reliable MP4 encoding experience. Portable MP4/H.264 does not support an alpha channel, so video frames use the configured preview background; the static formats remain transparent.
+PNG, SVG, and PDF exports are transparent by default. Enable **Include background in exports** in Advanced options to add the configured background while retaining the tight crop. MP4 frames always use the configured background because portable MP4/H.264 does not support an alpha channel.
+
+Where supported, RepliSketch asks for the MP4 filename and destination before encoding begins. Browsers without the File System Access API use their standard download workflow instead. A current Chromium-based browser provides the most reliable MP4 encoding experience.
 
 ## Development
 
-The logic tests use Node's built-in test runner:
+The app has no build step. Its logic tests use Node's built-in test runner:
 
 ```bash
 node --test tests/replisketch.logic.test.cjs

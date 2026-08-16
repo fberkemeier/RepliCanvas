@@ -13,6 +13,9 @@ const html = fs.readFileSync(htmlPath, "utf8");
 const testApi = `
   globalThis.__replisketchTest = {
     VIEW,
+    MAX_BASE_PAIR_COUNT,
+    GRID_COLUMN_COUNT,
+    MIN_ZOOM,
     advanceForkPlayback,
     applyForkDragPosition,
     applyOriginDragPosition,
@@ -21,7 +24,10 @@ const testApi = `
     artworkAspectY,
     artworkMarkup,
     backgroundLuminance,
+    basePairColorMode,
     basePairCount,
+    basePairIdentity,
+    basePairLineColors,
     basePairDistanceFade,
     basePairDisplayStep,
     basePairFraction,
@@ -32,10 +38,14 @@ const testApi = `
     basePairForkInfluence,
     basePairTransitionInfluence,
     boundedControlValue,
+    boundedLengthValue,
     bubbleFromBounds,
     canvasGridColor,
     canvasInkColor,
     configurationDocument,
+    connectedStrandShiftFraction,
+    crossoverClipHalfWidth,
+    crossoverSites,
     cutRange,
     daughterDetailFade,
     doubleStrandHalfHeight,
@@ -48,6 +58,7 @@ const testApi = `
     fixedUiTransform,
     fixedVideoSvgSource,
     forkCompletionTravel,
+    forkDescriptors,
     forkTravelBounds,
     forksShouldCollapse,
     getReplicationModel,
@@ -58,6 +69,7 @@ const testApi = `
     interactionHalfHeight,
     isCutGap,
     makeVideoExportState,
+    maximumLengthForBasePairCount,
     makeDefaultState,
     makeOrigins,
     mergeOverlappingBubbleState,
@@ -65,6 +77,9 @@ const testApi = `
     minimalReplicationAt,
     modelSupportsDoubleStrandDetails,
     nascentSpan,
+    newDnaDistanceInset,
+    newDnaStartDistance,
+    newDnaVisibleAt,
     nascentY,
     niceIntegerCeiling,
     normaliseStateSchema,
@@ -82,6 +97,7 @@ const testApi = `
     replicationTransitionAnchors,
     replicationModelForPercentage,
     replicatedFraction,
+    renderBasePairLine,
     renderBasePairs,
     renderNascentDna,
     reseedNextOriginId,
@@ -92,11 +108,14 @@ const testApi = `
     rulerTickPosition,
     sampledPath,
     schematicNascentStartProfile,
+    requestAnimationSaveHandle,
     saveMp4Blob,
+    saveMp4ToHandle,
     screenToWorld,
     setDragState(value) { dragState = value; },
     setElements(value) { Object.assign(elements, value); },
     setSPhaseTime,
+    selectedForkDescriptor,
     setState(value) { state = value; },
     setVideoExportBusy,
     setViewState(value) { viewState = value; },
@@ -106,9 +125,11 @@ const testApi = `
     snapForkTravel,
     snapFractionToBasePair,
     strandModel,
+    strandPhaseShift,
     supportedMp4MimeType,
     synchroniseSPhaseFromGeometry,
     templateY,
+    terminalClosureBoundaryForFork,
     terminalEdgeBlend,
     terminalPullSpan,
     terminalSmoothing,
@@ -504,7 +525,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     speed: 50,
     advanced: { terminalSmoothing: 99, transitionTightness: 1000 },
   });
-  assert.equal(high.length, 400);
+  assert.equal(high.length, 225);
   assert.equal(high.progress, 100);
   assert.equal(high.pairResolution, 10);
   assert.equal(high.basePairWidth, 7);
@@ -539,7 +560,8 @@ test("range-backed settings normalise imported values to the supported safe boun
 
   assert.equal(api.playbackSpeed({ speed: -1 }), 1, "legacy non-positive speeds use the default");
   assert.equal(api.playbackSpeed({ speed: 99 }), 5);
-  assert.equal(api.boundedControlValue("length", 401), 400);
+  assert.equal(api.boundedControlValue("length", 2000), 1250);
+  assert.equal(api.boundedLengthValue(2000, { pairResolution: 10, length: 90 }), 225);
 });
 
 test("ruler ticks remain anchored to genomic coordinates under pan and zoom", () => {
@@ -561,34 +583,49 @@ test("ruler ticks remain anchored to genomic coordinates under pan and zoom", ()
   }
 });
 
-test("maximum length and resolution stay within the bounded render-density budget", () => {
-  const state = freshState();
-  state.length = 400;
-  state.pairResolution = 10;
-  state.basePairWidth = 7;
-  state.weight = 8;
-  state.daughterSpacing = 400;
-  state.doubleStrandHeight = 56;
-  state.forkTravel = 0.2;
-  api.setState(state);
+test("all resolutions permit up to 500 rendered base pairs without exceeding the density budget", () => {
+  for (let resolution = 1; resolution <= 10; resolution += 1) {
+    const state = api.normaliseStateSchema({
+      ...freshState(),
+      length: 10000,
+      pairResolution: resolution,
+      basePairWidth: 7,
+      weight: 8,
+      daughterSpacing: 400,
+      doubleStrandHeight: 56,
+    });
+    api.setState(state);
+    assert.equal(state.length, api.maximumLengthForBasePairCount(state));
+    assert.ok(api.basePairCount() <= api.MAX_BASE_PAIR_COUNT, `resolution ${resolution} exceeded 500 bp`);
+    assert.ok(api.basePairCount() >= 480, `resolution ${resolution} should retain nearly the full 500-bp range`);
+  }
 
-  const lattice = api.basePairLattice();
-  assert.equal(lattice.subdivisionCount, 880);
-  assert.equal(lattice.edgeOffset, 0.5);
-  assert.equal(lattice.count, 879);
-  assert.equal(api.basePairCount(), 879);
-  assert.equal(api.displayedBasePairPositions().length, 880);
+  const state = api.normaliseStateSchema({
+    ...freshState(),
+    length: 10000,
+    pairResolution: 3,
+    basePairWidth: 7,
+    weight: 8,
+    daughterSpacing: 400,
+    doubleStrandHeight: 56,
+    forkTravel: 0.2,
+  });
+  api.setState(state);
+  assert.equal(state.length, 625);
+  assert.equal(api.basePairCount(), 500);
+  assert.equal(api.displayedBasePairPositions().length, 501);
+
   const labelledTicks = api.rulerTickIndices(api.rulerMajorEvery(7.25));
-  assert.ok(labelledTicks.length < 880);
+  assert.ok(labelledTicks.length < 501);
   assert.equal(labelledTicks[0], 0);
-  assert.equal(labelledTicks.at(-1), 879);
+  assert.equal(labelledTicks.at(-1), 500);
 
   const model = api.getReplicationModel();
   const pairs = api.renderBasePairs(model);
   const artwork = api.artworkMarkup(model);
   const rungCount = (pairs.match(/<line\b/g) || []).length;
   assert.ok(rungCount > 0);
-  assert.ok(rungCount <= 880 * 3, "each genomic site can render at most one parental and two daughter rungs");
+  assert.ok(rungCount <= 501 * 3, "each genomic site can render at most one parental and two daughter rungs");
   assert.doesNotMatch(artwork, /(?:NaN|Infinity)/);
 
   const halfStroke = state.weight / 2;
@@ -603,10 +640,6 @@ test("maximum length and resolution stay within the bounded render-density budge
       assert.ok(y >= halfStroke && y <= api.VIEW.height - halfStroke, `maximum-range strand escaped at x=${x}`);
     }
   }
-
-  assert.ok(8 >= 8, "minimum duplex height must accommodate maximum strand weight");
-  assert.ok(8 > 7, "minimum duplex height must exceed maximum base-pair width");
-  assert.ok(64 - 56 >= 8, "minimum daughter gap must accommodate maximum strand weight");
 });
 
 test("interaction height is exactly the configured replicated spacing", () => {
@@ -2542,33 +2575,53 @@ test("WebM fallback is remuxed into an MP4 blob without transcoding options", as
   assert.ok(video.size > 0);
 });
 
-test("MP4 completion uses a browser download anchor instead of a direct file handle", () => {
-  let clicked = 0;
-  sandbox.URL = {
-    createObjectURL() {
-      return "blob:replisketch-video";
+test("MP4 export asks for a filename first and falls back to a browser download where needed", async () => {
+  let pickerOptions = null;
+  const writes = [];
+  const handle = {
+    async createWritable() {
+      return {
+        async write(blob) { writes.push(blob); },
+        async close() { writes.push("closed"); },
+      };
     },
-    revokeObjectURL() {},
+  };
+  sandbox.window.showSaveFilePicker = async (options) => {
+    pickerOptions = options;
+    return handle;
   };
   const link = {
     hidden: true,
-    removeAttribute(name) {
-      delete this[name];
-    },
-    click() {
-      clicked += 1;
-    },
+    removeAttribute(name) { delete this[name]; },
+    click() {},
+  };
+  sandbox.URL = {
+    createObjectURL() { return "blob:replisketch-video"; },
+    revokeObjectURL() {},
   };
   api.setElements({ videoSaveLink: link });
 
-  const method = api.saveMp4Blob(new Blob(["mp4"], { type: "video/mp4" }), "replisketch.mp4");
+  const selected = await api.requestAnimationSaveHandle("replisketch.mp4");
+  assert.equal(selected.handle, handle);
+  assert.equal(selected.cancelled, false);
+  assert.equal(selected.supported, true);
+  assert.equal(pickerOptions.suggestedName, "replisketch.mp4");
+  assert.equal(Array.from(pickerOptions.types[0].accept["video/mp4"]).join(","), ".mp4");
 
-  assert.equal(method, "download");
+  const blob = new Blob(["mp4"], { type: "video/mp4" });
+  assert.equal(await api.saveMp4Blob(blob, "replisketch.mp4", handle), "file");
+  assert.equal(writes[0], blob);
+  assert.equal(writes[1], "closed");
+
+  delete sandbox.window.showSaveFilePicker;
+  let clicked = 0;
+  link.click = () => { clicked += 1; };
+  assert.equal(api.saveMp4Blob(blob, "replisketch.mp4"), "download");
   assert.equal(link.href, "blob:replisketch-video");
   assert.equal(link.download, "replisketch.mp4");
   assert.equal(link.hidden, false);
   assert.equal(clicked, 1);
-  assert.doesNotMatch(source, /showSaveFilePicker/);
+  assert.match(source, /showSaveFilePicker/);
 });
 
 test("MP4 busy state changes Download to Generating and restores it", () => {
@@ -2585,21 +2638,25 @@ test("MP4 busy state changes Download to Generating and restores it", () => {
       attributes[name] = value;
     },
   };
+  const spinner = { hidden: true };
   api.setElements({
     canvasFrame,
     downloadButton,
     downloadButtonLabel: label,
+    downloadButtonSpinner: spinner,
     exportMp4Button: { disabled: false },
   });
 
   api.setVideoExportBusy(true);
   assert.equal(label.textContent, "Generating...");
   assert.equal(downloadButton.disabled, true);
+  assert.equal(spinner.hidden, false);
   assert.equal(attributes["aria-busy"], true);
 
   api.setVideoExportBusy(false);
   assert.equal(label.textContent, "Download");
   assert.equal(downloadButton.disabled, false);
+  assert.equal(spinner.hidden, true);
   assert.equal(attributes["aria-busy"], false);
 });
 
@@ -2645,7 +2702,7 @@ test("all range controls expose the expanded safe contracts and correct initial 
   const contracts = {
     progressControl: ["0", "100", "1"],
     speedControl: ["0.25", "5", "0.25"],
-    lengthControl: ["10", "400", "5"],
+    lengthControl: ["10", "625", "5"],
     pairResolutionControl: ["1", "10", "1"],
     basePairWidthControl: ["0.2", "7", "0.1"],
     weightControl: ["1", "8", "0.5"],
@@ -2653,6 +2710,8 @@ test("all range controls expose the expanded safe contracts and correct initial 
     doubleStrandHeightControl: ["8", "56", "2"],
     transitionTightnessControl: ["-100", "100", "1"],
     terminalSmoothingControl: ["0", "6", "0.25"],
+    newDnaStartDistanceControl: ["0", "20", "0.25"],
+    strandPhaseShiftControl: ["-5", "5", "0.25"],
   };
 
   for (const [id, [minimum, maximum, step]] of Object.entries(contracts)) {
@@ -2667,6 +2726,10 @@ test("all range controls expose the expanded safe contracts and correct initial 
   assert.match(html, /id="lengthStat"[^>]*>72 bp</);
   assert.match(html, /id="pairResolutionOutput"[^>]*>3 between crossovers</);
   assert.match(html, /id="terminalSmoothingOutput"[^>]*>1\.5 bp</);
+  assert.match(html, /id="newDnaStartDistanceOutput"[^>]*>0 bp</);
+  assert.match(html, /id="strandPhaseShiftOutput"[^>]*>0 bp</);
+  assert.match(source, /const MAX_BASE_PAIR_COUNT = 500/);
+  assert.match(source, /const MIN_ZOOM = 0\.1/);
   assert.match(html, /<section class="rs-control-section rs-compact-section">[\s\S]*?<h2>Controls<\/h2>/);
 });
 
@@ -2700,14 +2763,18 @@ test("statusbar exposes compact project resources, version, selection, and lates
   assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliSketch"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch#readme"[\s\S]*aria-label="Documentation"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
-  assert.match(html, /class="rs-project-version">v1\.0\.0<\/span>/);
-  assert.match(css, /\.rs-project-version\s*\{[^}]*color:\s*#3c9ab7/s);
+  assert.match(html, /class="rs-project-version">v1\.1\.0<\/span>/);
+  assert.match(css, /\.rs-project-version\s*\{[^}]*color:\s*var\(--rs-template-a\)/s);
   assert.doesNotMatch(html, /<div class="rs-brand">[\s\S]*?rs-project-meta[\s\S]*?<\/div>\s*<div class="rs-top-actions"/);
   assert.match(
     html,
     /class="rs-status-copy"[\s\S]*id="selectionMessage"[\s\S]*rs-status-separator[\s\S]*id="statusMessage"/
   );
   assert.match(html, /class="rs-project-meta rs-status-project-meta"/);
+  assert.match(html, /id="projectMenuButton"[\s\S]*aria-controls="projectMenu"/);
+  assert.match(html, /id="projectMenu"[\s\S]*GitHub[\s\S]*Documentation[\s\S]*Raise an issue[\s\S]*Theme/);
+  const lightbulbs = html.match(/M9 18h6M10 22h4M8\.5 15\.5/g) || [];
+  assert.equal(lightbulbs.length, 2, "issue links in the menu and status bar must both use light bulbs");
   assert.match(html, /rs-guide-fork[\s\S]*Drag fork/);
 });
 
@@ -2729,6 +2796,12 @@ test("versioned configuration files round-trip all document settings", () => {
   state.speed = 2.25;
   state.discreteAnimation = true;
   state.colors.newDna = "#123abc";
+  state.colors.adenine = "#aa1122";
+  state.basePairColorMode = "bases";
+  state.basePairSeed = 987654321;
+  state.advanced.newDnaStartDistance = 4.25;
+  state.advanced.strandPhaseShift = -1.5;
+  state.advanced.includeExportBackground = true;
   state.advanced.snapToBasePairs = true;
   state.advanced.aspectX = 1.4;
   state.advanced.aspectY = 0.8;
@@ -2742,11 +2815,17 @@ test("versioned configuration files round-trip all document settings", () => {
 
   assert.equal(documentState.format, "RepliSketch");
   assert.equal(documentState.schemaVersion, 1);
-  assert.equal(documentState.appVersion, "1.0.0");
+  assert.equal(documentState.appVersion, "1.1.0");
   assert.equal(loaded.length, 135);
   assert.equal(loaded.speed, 2.25);
   assert.equal(loaded.discreteAnimation, true);
   assert.equal(loaded.colors.newDna, "#123abc");
+  assert.equal(loaded.colors.adenine, "#aa1122");
+  assert.equal(loaded.basePairColorMode, "bases");
+  assert.equal(loaded.basePairSeed, 987654321);
+  assert.equal(loaded.advanced.newDnaStartDistance, 4.25);
+  assert.equal(loaded.advanced.strandPhaseShift, -1.5);
+  assert.equal(loaded.advanced.includeExportBackground, true);
   assert.equal(loaded.advanced.snapToBasePairs, true);
   assert.equal(loaded.advanced.aspectX, 1.4);
   assert.equal(loaded.advanced.aspectY, 0.8);
@@ -2957,11 +3036,14 @@ test("custom canvas backgrounds keep previews legible while static exports remai
   assert.match(api.canvasGridColor(dark), /255, 255, 255/);
   assert.match(css, /var\(--rs-grid-line/);
   assert.match(css, /var\(--rs-canvas-ink/);
-  assert.doesNotMatch(source, /background\.setAttribute\("fill", state\.advanced\.backgroundColor/);
+  assert.match(source, /if \(state\.advanced\.includeExportBackground\)/);
+  assert.match(source, /background\.setAttribute\("fill", state\.advanced\.backgroundColor/);
+  assert.equal(light.advanced.includeExportBackground, false, "static exports remain transparent by default");
   assert.match(source, /getContext\("2d", \{ alpha: true \}\)/);
   assert.match(source, /context\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
   assert.match(source, /overflow:hidden;background:transparent/);
-  assert.match(html, /<strong>PNG<\/strong><span>Transparent, 2x<\/span>/);
+  assert.match(html, /id="includeExportBackgroundToggle"[^>]*type="checkbox"/);
+  assert.match(html, /<strong>PNG<\/strong><span>High-resolution raster, 2x<\/span>/);
 
   // MP4 stays opaque because the supported MP4 codecs do not preserve alpha.
   dark.speed = 5;
@@ -2975,4 +3057,259 @@ test("custom canvas backgrounds keep previews legible while static exports remai
   };
   await api.drawVideoFrame({ width: 320, height: 180 }, context, dark, 0);
   assert.equal(paintedBackground, "#000000");
+});
+
+
+test("new-DNA fork distance augments rather than replaces the existing height-based start rules", () => {
+  for (const modelName of ["standard", "elegant"]) {
+    const state = freshState();
+    state.advanced.strandModel = modelName;
+    state.origins = [{ id: `distance-${modelName}`, position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+    state.forkTravel = 0.28;
+    state.advanced.newDnaStartDistance = 0;
+    api.setState(state);
+    const model = api.getReplicationModel();
+    const region = model.regions[0];
+    const oldSpan = api.nascentSpan(region, model);
+
+    state.advanced.newDnaStartDistance = 8;
+    const shiftedSpan = api.nascentSpan(region, model);
+    const regionStart = api.VIEW.x0 + region.start * api.VIEW.moleculeWidth;
+    const regionEnd = api.VIEW.x0 + region.end * api.VIEW.moleculeWidth;
+    const configuredInset = api.newDnaDistanceInset(region, "start", state);
+
+    assert.ok(shiftedSpan.fromX >= oldSpan.fromX - 1e-9);
+    assert.ok(shiftedSpan.toX <= oldSpan.toX + 1e-9);
+    assert.ok(shiftedSpan.fromX - regionStart >= configuredInset - 1e-9);
+    assert.ok(regionEnd - shiftedSpan.toX >= api.newDnaDistanceInset(region, "end", state) - 1e-9);
+
+    const excludedX = Math.min(shiftedSpan.fromX - 0.5, Math.max(oldSpan.fromX, regionStart) + 0.5);
+    if (excludedX > regionStart && excludedX < shiftedSpan.fromX) {
+      const replication = api.replicationAt(excludedX, model);
+      assert.equal(api.newDnaVisibleAt(excludedX, replication, model), false);
+    }
+    const middleX = (shiftedSpan.fromX + shiftedSpan.toX) / 2;
+    assert.equal(api.newDnaVisibleAt(middleX, api.replicationAt(middleX, model), model), true);
+  }
+
+  const terminal = freshState();
+  terminal.origins = [{ id: "distance-terminal", position: 0.2, startPosition: 0.2, leftOffset: 0, rightOffset: 0 }];
+  terminal.forkTravel = 0.2;
+  terminal.advanced.newDnaStartDistance = 10;
+  api.setState(terminal);
+  const terminalModel = api.getReplicationModel();
+  const terminalRegion = terminalModel.regions[0];
+  assert.equal(terminalRegion.openStart, true);
+  assert.equal(api.newDnaDistanceInset(terminalRegion, "start", terminal), 0);
+  assert.ok(api.newDnaDistanceInset(terminalRegion, "end", terminal) > 0);
+  assert.equal(api.nascentSpan(terminalRegion, terminalModel).fromX, api.VIEW.x0);
+});
+
+test("base-pair colour modes preserve complementary A-T and G-C pairing with a stable shuffled sequence", () => {
+  const state = freshState();
+  state.origins = [];
+  state.colors = {
+    ...state.colors,
+    templateA: "#111111",
+    templateB: "#222222",
+    newDna: "#333333",
+    basePair: "#444444",
+    adenine: "#aa0000",
+    thymine: "#00aa00",
+    guanine: "#0000aa",
+    cytosine: "#aaaa00",
+  };
+  api.setState(state);
+
+  const identities = Array.from({ length: 160 }, (_, index) => api.basePairIdentity(index, state));
+  const labels = new Set(identities.map((identity) => identity.label));
+  assert.deepEqual([...labels].sort(), ["A-T", "G-C", "T-A", "C-G"].sort());
+  const complement = { A: "T", T: "A", G: "C", C: "G" };
+  assert.ok(identities.every(({ first, second }) => complement[first] === second));
+  assert.deepEqual(
+    identities.slice(0, 20).map(({ label }) => label),
+    Array.from({ length: 20 }, (_, index) => api.basePairIdentity(index, state).label),
+    "the shuffled sequence must remain stable while editing"
+  );
+  const reseeded = { ...state, basePairSeed: state.basePairSeed + 1 };
+  assert.notDeepEqual(
+    identities.slice(0, 20).map(({ label }) => label),
+    Array.from({ length: 20 }, (_, index) => api.basePairIdentity(index, reseeded).label),
+    "changing the stored seed must produce a different shuffled sequence"
+  );
+
+  state.basePairColorMode = "single";
+  assert.deepEqual(Array.from(api.basePairLineColors("a", "b", "A", "T", state)), ["#444444", "#444444"]);
+  state.basePairColorMode = "strand";
+  assert.deepEqual(Array.from(api.basePairLineColors("a", "b", "A", "T", state)), ["#111111", "#222222"]);
+  assert.deepEqual(Array.from(api.basePairLineColors("a", "top", "A", "T", state)), ["#111111", "#333333"]);
+  state.basePairColorMode = "bases";
+  assert.deepEqual(Array.from(api.basePairLineColors("a", "b", "A", "T", state)), ["#aa0000", "#00aa00"]);
+  assert.deepEqual(Array.from(api.basePairLineColors("b", "bottom", "C", "G", state)), ["#aaaa00", "#0000aa"]);
+
+  const twoColourLine = api.renderBasePairLine(100, 20, 60, 1, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.equal((twoColourLine.match(/<line\b/g) || []).length, 2);
+  assert.match(twoColourLine, /data-pair="A-T"/);
+  assert.match(twoColourLine, /stroke="#aa0000"/);
+  assert.match(twoColourLine, /stroke="#00aa00"/);
+});
+
+test("connected-strand phase shifts move the partner waveform and crossover clips without tilting base pairs", () => {
+  const state = freshState();
+  state.origins = [];
+  state.advanced.strandModel = "standard";
+  state.advanced.strandPhaseShift = 0;
+  api.setState(state);
+  const sampleX = api.VIEW.x0 + 0.237 * api.VIEW.moleculeWidth;
+  const aBefore = api.helixWave(sampleX, "a", state);
+  const bBefore = api.helixWave(sampleX, "b", state);
+  const sitesBefore = new Map(api.crossoverSites(state).map((site) => [site.index, site.x]));
+
+  state.advanced.strandPhaseShift = 2.5;
+  const aAfter = api.helixWave(sampleX, "a", state);
+  const bAfter = api.helixWave(sampleX, "b", state);
+  const sitesAfter = new Map(api.crossoverSites(state).map((site) => [site.index, site.x]));
+  assert.equal(aAfter, aBefore, "Template A remains the fixed phase reference");
+  assert.notEqual(bAfter, bBefore, "the connected partner strand must move relative to Template A");
+  assert.ok([...sitesBefore].some(([index, x]) => Math.abs(sitesAfter.get(index) - x) > 1e-6));
+
+  state.basePairColorMode = "single";
+  const markup = api.renderBasePairs(api.getReplicationModel());
+  const lines = [...markup.matchAll(/<line x1="([\d.-]+)" y1="[\d.-]+" x2="([\d.-]+)"/g)];
+  assert.ok(lines.length > 0);
+  assert.ok(lines.every((match) => match[1] === match[2]), "base pairs must remain vertical after the phase shift");
+
+  state.advanced.aspectX = 1;
+  const normalClip = api.crossoverClipHalfWidth(1.8, 7, state);
+  state.advanced.aspectX = 2;
+  const widenedClip = api.crossoverClipHalfWidth(1.8, 7, state);
+  assert.ok(Math.abs(widenedClip * 2 - normalClip) < 1e-12, "clip width must counteract horizontal aspect scaling");
+});
+
+test("an open-ended terminal bubble can be removed by dragging its sole fork into the contained chromosome end", () => {
+  const leftOpen = freshState();
+  leftOpen.origins = [{ id: "left-open", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 }];
+  leftOpen.forkTravel = 0.25;
+  api.setState(leftOpen);
+  let geometry = api.getReplicationModel().origins[0];
+  assert.equal(geometry.leftActive, false);
+  assert.equal(geometry.leftReason, "end");
+  assert.equal(geometry.rightActive, true);
+  assert.equal(api.terminalClosureBoundaryForFork(geometry, "right"), 0);
+
+  const rightDrag = { role: "fork", side: "right", originId: "left-open", pairedForks: false };
+  let result = api.applyForkDragPosition(rightDrag, 0.12, leftOpen);
+  assert.equal(result.terminalClosure, true);
+  assert.equal(result.collapsePending, false);
+  assert.ok(Math.abs(leftOpen.origins[0].startPosition - 0.06) < 1e-12);
+  let bounds = api.rawBubbleBounds(leftOpen.origins[0], leftOpen);
+  assert.ok(Math.abs(bounds.start) < 1e-12);
+  assert.ok(Math.abs(bounds.end - 0.12) < 1e-12);
+  assert.deepEqual({ ...leftOpen.selectedFork }, { originId: "left-open", side: "right" });
+
+  result = api.applyForkDragPosition(rightDrag, 0, leftOpen);
+  assert.equal(result.collapsePending, true, "the remaining fork can pass the origin and reach the left chromosome end");
+  bounds = api.rawBubbleBounds(leftOpen.origins[0], leftOpen);
+  assert.ok(bounds.end - bounds.start < 1e-12);
+
+  const rightOpen = freshState();
+  rightOpen.origins = [{ id: "right-open", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 }];
+  rightOpen.forkTravel = 0.25;
+  api.setState(rightOpen);
+  geometry = api.getReplicationModel().origins[0];
+  assert.equal(geometry.rightReason, "end");
+  assert.equal(api.terminalClosureBoundaryForFork(geometry, "left"), 1);
+  const leftDrag = { role: "fork", side: "left", originId: "right-open", pairedForks: false };
+  result = api.applyForkDragPosition(leftDrag, 0.88, rightOpen);
+  assert.equal(result.terminalClosure, true);
+  assert.equal(result.collapsePending, false);
+  assert.ok(Math.abs(rightOpen.origins[0].startPosition - 0.94) < 1e-12);
+  bounds = api.rawBubbleBounds(rightOpen.origins[0], rightOpen);
+  assert.ok(Math.abs(bounds.start - 0.88) < 1e-12);
+  assert.ok(Math.abs(bounds.end - 1) < 1e-12);
+  result = api.applyForkDragPosition(leftDrag, 1, rightOpen);
+  assert.equal(result.collapsePending, true, "the remaining fork can pass the origin and reach the right chromosome end");
+  bounds = api.rawBubbleBounds(rightOpen.origins[0], rightOpen);
+  assert.ok(bounds.end - bounds.start < 1e-12);
+});
+
+test("moving a fork makes it the selected numbered object", () => {
+  const state = freshState();
+  api.setState(state);
+  const initial = api.forkDescriptors(api.getReplicationModel());
+  assert.ok(initial.length >= 2);
+  const target = initial[1];
+  const drag = {
+    role: "fork",
+    side: target.side,
+    originId: target.origin.id,
+    pairedForks: target.origin.leftActive && target.origin.rightActive,
+    leftPosition: target.origin.leftPosition,
+    rightPosition: target.origin.rightPosition,
+  };
+  const desired = target.side === "left" ? target.origin.leftPosition + 0.01 : target.origin.rightPosition - 0.01;
+  const moved = api.applyForkDragPosition(drag, desired, state);
+  assert.ok(moved);
+  assert.equal(state.selectedOriginId, null);
+  assert.deepEqual({ ...state.selectedFork }, { originId: target.origin.id, side: target.side });
+  const selected = api.selectedForkDescriptor(api.getReplicationModel());
+  assert.ok(selected);
+  assert.equal(selected.number, target.number);
+  assert.match(source, /`F\$\{selectedFork\.number\} \(\$\{selectedFork\.side\}\) at/);
+});
+
+test("discrete playback preserves the continuous fork speed while quantising only the visible pose", () => {
+  const continuous = freshState();
+  continuous.origins = [{ id: "speed-continuous", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+  continuous.forkTravel = 0;
+  continuous.discreteAnimation = false;
+  const discrete = JSON.parse(JSON.stringify(continuous));
+  discrete.origins[0].id = "speed-discrete";
+  discrete.discreteAnimation = true;
+
+  const chunks = Array.from({ length: 137 }, (_, index) => 3 + (index % 11));
+  const elapsed = chunks.reduce((sum, chunk) => sum + chunk, 0);
+  api.advanceForkPlayback(elapsed, continuous);
+  chunks.forEach((chunk) => api.advanceForkPlayback(chunk, discrete));
+  const step = api.basePairStepFraction(discrete);
+  assert.ok(continuous.forkTravel >= discrete.forkTravel);
+  assert.ok(continuous.forkTravel - discrete.forkTravel < step + 1e-12);
+  assert.equal(Math.round(discrete.forkTravel / step), discrete.forkTravel / step);
+
+  api.advanceForkPlayback((step / (0.006 / 400)) * 1.01, discrete);
+  assert.ok(discrete.forkTravel >= continuous.forkTravel, "the carried remainder must release the next full step at the same average speed");
+});
+
+test("the fixed preview grid spans both genomic endpoints independently of base-pair resolution", () => {
+  assert.equal(api.GRID_COLUMN_COUNT, 12);
+  const gridStep = api.VIEW.moleculeWidth / api.GRID_COLUMN_COUNT;
+  assert.equal(api.VIEW.x0 + gridStep * api.GRID_COLUMN_COUNT, api.VIEW.x1);
+  assert.match(source, /VIEW\.x0 \+ VIEW\.moleculeWidth \/ GRID_COLUMN_COUNT/);
+  assert.match(source, /const anchor = transformedSvgPoint\(VIEW\.x0/);
+  assert.doesNotMatch(source, /--rs-grid-x[^\n]*basePairResolution/);
+});
+
+test("playback, project, aspect, and control-guide layout matches the refined interface", () => {
+  const header = html.match(/<div class="rs-canvas-header">([\s\S]*?)<div class="rs-canvas-frame"/)?.[1] || "";
+  assert.ok(header.indexOf("rs-header-playback") >= 0);
+  assert.ok(header.indexOf("rs-header-playback") < header.indexOf("rs-header-stats"));
+  assert.doesNotMatch(html.match(/<header class="rs-topbar">([\s\S]*?)<\/header>/)?.[1] || "", /progressControl|speedControl|playButton/);
+  assert.match(css, /\.rs-header-discrete-toggle\s*\{[^}]*padding:\s*0 2px;[^}]*color:/s);
+  assert.doesNotMatch(css.match(/\.rs-header-discrete-toggle\s*\{[^}]*\}/s)?.[0] || "", /border:/);
+
+  const guide = html.match(/<div class="rs-control-guide"[\s\S]*?<\/div>\s*<div class="rs-inline-actions">/)?.[0] || "";
+  assert.ok(guide.indexOf("Add origin") < guide.indexOf("Shift"));
+  assert.ok(guide.indexOf("Split bubble") < guide.indexOf("Shift"));
+  assert.ok(guide.indexOf("Drag bubble") < guide.indexOf("Shift"));
+  assert.ok(guide.indexOf("Drag fork") < guide.indexOf("Shift"));
+  assert.doesNotMatch(guide, /Wheel zoom/);
+
+  assert.match(css, /\.rs-zoom-controls\s*\{[\s\S]*?width:\s*154px;/);
+  assert.match(css, /\.rs-aspect-controls\s*\{[^}]*top:\s*52px;[^}]*right:\s*12px;[^}]*width:\s*154px;/s);
+  assert.match(source, /const MIN_ZOOM = 0\.1/);
 });

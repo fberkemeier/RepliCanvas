@@ -11,7 +11,7 @@
   VIEW.moleculeWidth = VIEW.x1 - VIEW.x0;
 
   const EPSILON = 0.0001;
-  const APP_VERSION = "1.0.0";
+  const APP_VERSION = "1.1.0";
   const CONFIG_FORMAT = "RepliSketch";
   const CONFIG_SCHEMA_VERSION = 1;
   const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
@@ -20,7 +20,7 @@
   const CONTROL_RANGES = Object.freeze({
     progress: { min: 0, max: 100 },
     speed: { min: 0.25, max: 5 },
-    length: { min: 10, max: 400 },
+    length: { min: 10, max: 1250 },
     pairResolution: { min: 1, max: 10 },
     basePairWidth: { min: 0.2, max: 7 },
     weight: { min: 1, max: 8 },
@@ -28,17 +28,22 @@
     doubleStrandHeight: { min: 8, max: 56 },
     transitionTightness: { min: -100, max: 100 },
     terminalSmoothing: { min: 0, max: 6 },
+    newDnaStartDistance: { min: 0, max: 20 },
+    strandPhaseShift: { min: -5, max: 5 },
     aspectX: { min: 0.5, max: 2 },
     aspectY: { min: 0.5, max: 2 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
+  const MAX_BASE_PAIR_COUNT = 500;
+  const GRID_COLUMN_COUNT = 12;
+  const BASE_PAIR_COLOR_MODES = new Set(["single", "strand", "bases"]);
   const MAX_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.max;
   const NASCENT_PROFILE_THRESHOLD = 0.38;
   const PARENTAL_PAIR_FADE_END = 0.12;
   const BASE_PAIR_MAX_SPACING_RATIO = 1 / 3;
   const HISTORY_LIMIT = 30;
   const EXPORT_PADDING = 12;
-  const MIN_ZOOM = 0.5;
+  const MIN_ZOOM = 0.1;
   const MAX_ZOOM = 4;
   const FORK_COLLAPSE_PX = 8;
   // Raw replication intervals are compared before the display model resolves
@@ -67,11 +72,17 @@
     daughterSpacing: 152,
     speed: 1,
     discreteAnimation: false,
+    basePairColorMode: "single",
+    basePairSeed: 0x51f15e,
     colors: {
       templateA: "#067e94",
       templateB: "#022851",
       newDna: "#8b1e2d",
       basePair: "#022851",
+      adenine: "#d1495b",
+      thymine: "#edae49",
+      guanine: "#00798c",
+      cytosine: "#30638e",
     },
     layers: {
       pairs: true,
@@ -86,6 +97,9 @@
       grid: true,
       alwaysShowControls: true,
       snapToBasePairs: false,
+      includeExportBackground: false,
+      newDnaStartDistance: 0,
+      strandPhaseShift: 0,
       aspectX: 1,
       aspectY: 1,
       backgroundColor: "#f8faf9",
@@ -106,6 +120,7 @@
   let viewState = { zoom: 1, panX: 0, panY: 0 };
   let hoverState = null;
   let modifierState = { shift: false, pan: false };
+  let themeMode = "system";
   const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
@@ -138,6 +153,17 @@
     const t = clamp(value, 0, 1);
     return t * t * (3 - 2 * t);
   };
+
+  function randomBasePairSeed() {
+    try {
+      const values = new Uint32Array(1);
+      globalThis.crypto?.getRandomValues?.(values);
+      if (values[0]) return values[0] >>> 0;
+    } catch {
+      // Restricted contexts can fall back to the local pseudorandom generator.
+    }
+    return Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+  }
 
   function strandModel(sourceState = state) {
     const configured = sourceState?.advanced?.strandModel;
@@ -202,6 +228,64 @@
     );
   }
 
+  function maximumLengthForBasePairCount(sourceState = state) {
+    const resolution = basePairResolution(sourceState);
+    const edgeOffset = resolution % 2 === 0 ? 0.5 : 0;
+    const maximumCrossovers = Math.max(
+      1,
+      Math.floor((MAX_BASE_PAIR_COUNT + edgeOffset * 2) / (resolution + 1))
+    );
+    return clamp(
+      maximumCrossovers * (BASE_PAIRS_PER_TURN / 2),
+      CONTROL_RANGES.length.min,
+      CONTROL_RANGES.length.max
+    );
+  }
+
+  function boundedLengthValue(value, sourceState = state) {
+    const configured = Number(value);
+    const configuredFallback = Number(sourceState?.length);
+    const fallback = Number.isFinite(configuredFallback) ? configuredFallback : DEFAULTS.length;
+    const resolved = Number.isFinite(configured) ? configured : fallback;
+    return clamp(
+      resolved,
+      CONTROL_RANGES.length.min,
+      maximumLengthForBasePairCount(sourceState)
+    );
+  }
+
+  function basePairColorMode(sourceState = state) {
+    const configured = sourceState?.basePairColorMode;
+    return BASE_PAIR_COLOR_MODES.has(configured) ? configured : DEFAULTS.basePairColorMode;
+  }
+
+  function newDnaStartDistance(sourceState = state) {
+    return boundedControlValue(
+      "newDnaStartDistance",
+      sourceState?.advanced?.newDnaStartDistance,
+      DEFAULTS.advanced.newDnaStartDistance
+    );
+  }
+
+  function newDnaStartDistanceLabel(sourceState = state) {
+    const value = newDnaStartDistance(sourceState);
+    return `${Number(value.toFixed(2))} bp`;
+  }
+
+  function strandPhaseShift(sourceState = state) {
+    return boundedControlValue(
+      "strandPhaseShift",
+      sourceState?.advanced?.strandPhaseShift,
+      DEFAULTS.advanced.strandPhaseShift
+    );
+  }
+
+  function strandPhaseShiftLabel(sourceState = state) {
+    const value = strandPhaseShift(sourceState);
+    if (Math.abs(value) <= EPSILON) return "0 bp";
+    return `${value > 0 ? "+" : ""}${Number(value.toFixed(2))} bp`;
+  }
+
   function artworkAspectX(sourceState = state) {
     return boundedControlValue("aspectX", sourceState?.advanced?.aspectX, DEFAULTS.advanced.aspectX);
   }
@@ -219,6 +303,11 @@
   function normaliseStateSchema(sourceState) {
     sourceState.colors = { ...DEFAULTS.colors, ...(sourceState.colors || {}) };
     sourceState.layers = { ...DEFAULTS.layers, ...(sourceState.layers || {}) };
+    sourceState.basePairColorMode = basePairColorMode(sourceState);
+    const configuredSeed = Number(sourceState.basePairSeed);
+    sourceState.basePairSeed = Number.isFinite(configuredSeed)
+      ? Math.trunc(configuredSeed) >>> 0
+      : DEFAULTS.basePairSeed;
     const configuredModel = sourceState.advanced?.strandModel;
     const legacySimplified = Boolean(sourceState.advanced?.simplified);
     sourceState.advanced = { ...DEFAULTS.advanced, ...(sourceState.advanced || {}) };
@@ -236,18 +325,29 @@
       sourceState.advanced.terminalSmoothing,
       DEFAULTS.advanced.terminalSmoothing
     );
+    sourceState.advanced.newDnaStartDistance = newDnaStartDistance(sourceState);
+    sourceState.advanced.strandPhaseShift = strandPhaseShift(sourceState);
     sourceState.advanced.aspectX = artworkAspectX(sourceState);
     sourceState.advanced.aspectY = artworkAspectY(sourceState);
+    sourceState.advanced.crossoverGaps = sourceState.advanced.crossoverGaps === true;
+    sourceState.advanced.grid = sourceState.advanced.grid !== false;
+    sourceState.advanced.alwaysShowControls = sourceState.advanced.alwaysShowControls !== false;
     sourceState.advanced.snapToBasePairs = sourceState.advanced.snapToBasePairs === true;
+    sourceState.advanced.includeExportBackground = sourceState.advanced.includeExportBackground === true;
     sourceState.discreteAnimation = sourceState.discreteAnimation === true;
-    sourceState.length = boundedControlValue("length", sourceState.length);
+    sourceState.pairResolution = basePairResolution(sourceState);
+    sourceState.length = boundedLengthValue(sourceState.length, sourceState);
     sourceState.progress = boundedControlValue("progress", sourceState.progress);
     sourceState.basePairWidth = boundedControlValue("basePairWidth", sourceState.basePairWidth);
     sourceState.weight = boundedControlValue("weight", sourceState.weight);
     sourceState.doubleStrandHeight = boundedControlValue("doubleStrandHeight", sourceState.doubleStrandHeight);
     sourceState.daughterSpacing = boundedControlValue("daughterSpacing", sourceState.daughterSpacing);
     sourceState.speed = playbackSpeed(sourceState);
-    sourceState.pairResolution = basePairResolution(sourceState);
+    sourceState.selectedFork = isPlainRecord(sourceState.selectedFork)
+      && typeof sourceState.selectedFork.originId === "string"
+      && ["left", "right"].includes(sourceState.selectedFork.side)
+      ? { originId: sourceState.selectedFork.originId, side: sourceState.selectedFork.side }
+      : null;
     return sourceState;
   }
 
@@ -291,6 +391,9 @@
           throw invalidConfiguration(`${valuePath} must be a six-digit hexadecimal colour`);
         }
         if (key === "strandModel" && !["standard", "elegant", "minimal"].includes(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        if (key === "basePairColorMode" && !BASE_PAIR_COLOR_MODES.has(value)) {
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         result[key] = value;
@@ -353,6 +456,21 @@
       throw invalidConfiguration("state.selectedOriginId is invalid");
     }
     candidate.selectedOriginId = selectedOriginId ?? null;
+
+    const selectedFork = sourceState.selectedFork;
+    if (selectedFork !== undefined && selectedFork !== null) {
+      if (
+        !isPlainRecord(selectedFork) ||
+        !originIds.has(selectedFork.originId) ||
+        !["left", "right"].includes(selectedFork.side)
+      ) {
+        throw invalidConfiguration("state.selectedFork is invalid");
+      }
+      candidate.selectedFork = { originId: selectedFork.originId, side: selectedFork.side };
+      candidate.selectedOriginId = null;
+    } else {
+      candidate.selectedFork = null;
+    }
     candidate.playing = false;
     return normaliseStateSchema(candidate);
   }
@@ -552,12 +670,14 @@
   function makeDefaultState() {
     const defaultState = normaliseStateSchema({
       ...DEFAULTS,
+      basePairSeed: randomBasePairSeed(),
       colors: { ...DEFAULTS.colors },
       layers: { ...DEFAULTS.layers },
       advanced: { ...DEFAULTS.advanced },
       origins: makeOrigins(2),
       cuts: [],
       selectedOriginId: null,
+      selectedFork: null,
       playing: false,
     });
     defaultState.forkTravel = findForkTravelForReplicatedFraction(defaultState.progress, defaultState);
@@ -572,6 +692,7 @@
       advanced: { ...state.advanced },
       origins: state.origins.map((origin) => ({ ...origin })),
       cuts: state.cuts.map((cut) => ({ ...cutRange(cut) })),
+      selectedFork: state.selectedFork ? { ...state.selectedFork } : null,
       playing: false,
     };
   }
@@ -906,11 +1027,22 @@
     };
   }
 
-  function helixWave(x) {
-    if (strandModel() !== "standard") return 0;
+  function connectedStrandShiftFraction(sourceState = state) {
+    return strandPhaseShift(sourceState) / Math.max(1, basePairLattice(sourceState).subdivisionCount);
+  }
+
+  function helixWave(x, track = "a", sourceState = state) {
+    if (strandModel(sourceState) !== "standard") return 0;
     const fraction = (x - VIEW.x0) / VIEW.moleculeWidth;
-    const turns = state.length / BASE_PAIRS_PER_TURN;
-    return Math.cos(fraction * turns * Math.PI * 2) * doubleStrandHalfHeight();
+    const turns = sourceState.length / BASE_PAIRS_PER_TURN;
+    const partnerTrack = track === "b" || track === "top";
+    const phase =
+      (fraction + (partnerTrack ? connectedStrandShiftFraction(sourceState) : 0)) *
+        turns *
+        Math.PI *
+        2 +
+      (partnerTrack ? Math.PI : 0);
+    return Math.cos(phase) * doubleStrandHalfHeight(sourceState);
   }
 
   function crossoverCount(sourceState = state) {
@@ -1072,14 +1204,31 @@
     return positions;
   }
 
-  function crossoverNear(x) {
-    const count = crossoverCount();
-    const fraction = (x - VIEW.x0) / VIEW.moleculeWidth;
-    const index = Math.round(fraction * count - 0.5);
-    if (index < 0 || index >= count) return null;
-    const crossoverX = VIEW.x0 + ((index + 0.5) / count) * VIEW.moleculeWidth;
-    const halfGap = Math.max(3.5, state.weight * 1.15);
-    return Math.abs(x - crossoverX) <= halfGap ? { index, x: crossoverX } : null;
+  function crossoverSites(sourceState = state) {
+    const count = crossoverCount(sourceState);
+    const relativeShift = connectedStrandShiftFraction(sourceState) / 2;
+    return Array.from({ length: count }, (_, index) => {
+      const rawFraction = (index + 0.5) / count - relativeShift;
+      const fraction = ((rawFraction % 1) + 1) % 1;
+      return {
+        index,
+        fraction,
+        x: VIEW.x0 + fraction * VIEW.moleculeWidth,
+      };
+    }).sort((first, second) => first.x - second.x);
+  }
+
+  function crossoverClipHalfWidth(multiplier = 1.15, minimum = 3.5, sourceState = state) {
+    return Math.max(minimum, sourceState.weight * multiplier) / Math.max(EPSILON, artworkAspectX(sourceState));
+  }
+
+  function crossoverNear(x, sourceState = state) {
+    const site = crossoverSites(sourceState).reduce((nearest, candidate) => {
+      const distance = Math.abs(x - candidate.x);
+      return !nearest || distance < nearest.distance ? { ...candidate, distance } : nearest;
+    }, null);
+    const halfGap = crossoverClipHalfWidth(1.15, 3.5, sourceState);
+    return site && site.distance <= halfGap ? site : null;
   }
 
   function isUnderpassGap(x, strand, model) {
@@ -1115,8 +1264,9 @@
     if (modelName === "minimal") {
       return strand === "a" ? VIEW.centerY - replication.amount : VIEW.centerY + replication.amount;
     }
-    const wave = helixWave(x);
-    return strand === "a" ? VIEW.centerY - replication.amount + wave : VIEW.centerY + replication.amount - wave;
+    return strand === "a"
+      ? VIEW.centerY - replication.amount + helixWave(x, "a")
+      : VIEW.centerY + replication.amount + helixWave(x, "b");
   }
 
   function nascentY(x, daughter, model = getReplicationModel()) {
@@ -1133,8 +1283,9 @@
         ? VIEW.centerY - replication.amount + halfHeight
         : VIEW.centerY + replication.amount - halfHeight;
     }
-    const wave = helixWave(x);
-    return daughter === "top" ? VIEW.centerY - daughterOffset - wave : VIEW.centerY + daughterOffset + wave;
+    return daughter === "top"
+      ? VIEW.centerY - daughterOffset + helixWave(x, "top")
+      : VIEW.centerY + daughterOffset + helixWave(x, "bottom");
   }
 
   function regionTransitionWidth(region, sourceState = state) {
@@ -1204,6 +1355,16 @@
       : regionEdgeTransitionWidth(region, side, model, sourceState);
   }
 
+  function newDnaDistanceInset(region, side, sourceState = state) {
+    const open = side === "start" ? region.openStart : region.openEnd;
+    if (open) return 0;
+    const edgeBlend = clamp(side === "start" ? region.startBlend || 0 : region.endBlend || 0, 0, 1);
+    const distance =
+      (newDnaStartDistance(sourceState) * VIEW.moleculeWidth) /
+      Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    return distance * (1 - edgeBlend);
+  }
+
   function nascentEdgeInset(region, side, model) {
     const edgeBlend = side === "start" ? region.startBlend || 0 : region.endBlend || 0;
     if ((side === "start" ? region.openStart : region.openEnd) || edgeBlend >= NASCENT_PROFILE_THRESHOLD) return 0;
@@ -1263,22 +1424,35 @@
     return naturalY + correction;
   }
 
-  function nascentSpan(region, model = getReplicationModel()) {
+  function nascentSpan(region, model = getReplicationModel(), sourceState = state) {
     const regionStart = VIEW.x0 + region.start * VIEW.moleculeWidth;
     const regionEnd = VIEW.x0 + region.end * VIEW.moleculeWidth;
-    if (strandModel() === "elegant") {
-      const startInset = schematicNascentEdgeInset(region, "start", model);
-      const endInset = schematicNascentEdgeInset(region, "end", model);
-      return {
-        fromX: Math.min(regionEnd, regionStart + startInset),
-        toX: Math.max(regionStart, regionEnd - endInset),
-      };
+    const distanceStartInset = newDnaDistanceInset(region, "start", sourceState);
+    const distanceEndInset = newDnaDistanceInset(region, "end", sourceState);
+    let startInset = distanceStartInset;
+    let endInset = distanceEndInset;
+
+    if (strandModel(sourceState) === "elegant") {
+      startInset = Math.max(
+        startInset,
+        schematicNascentEdgeInset(region, "start", model, sourceState)
+      );
+      endInset = Math.max(endInset, schematicNascentEdgeInset(region, "end", model, sourceState));
+    } else if (strandModel(sourceState) === "standard") {
+      startInset = Math.max(startInset, nascentEdgeInset(region, "start", model));
+      endInset = Math.max(endInset, nascentEdgeInset(region, "end", model));
     }
-    if (strandModel() !== "standard") return { fromX: regionStart, toX: regionEnd };
+
     return {
-      fromX: regionStart + nascentEdgeInset(region, "start", model),
-      toX: regionEnd - nascentEdgeInset(region, "end", model),
+      fromX: Math.min(regionEnd, regionStart + startInset),
+      toX: Math.max(regionStart, regionEnd - endInset),
     };
+  }
+
+  function newDnaVisibleAt(x, replication, model, sourceState = state) {
+    if (!replication?.region || replication.profile < NASCENT_PROFILE_THRESHOLD) return false;
+    const span = nascentSpan(replication.region, model, sourceState);
+    return x >= span.fromX - EPSILON && x <= span.toX + EPSILON;
   }
 
   function replicationTransitionAnchors(model) {
@@ -1522,14 +1696,77 @@
     };
   }
 
-  function renderBasePairLine(x, firstY, secondY, opacity) {
+  function mixedBasePairValue(index, sourceState = state) {
+    let value = (Math.trunc(Number(index) || 0) + 1 + (sourceState.basePairSeed >>> 0)) >>> 0;
+    value ^= value >>> 16;
+    value = Math.imul(value, 0x7feb352d) >>> 0;
+    value ^= value >>> 15;
+    value = Math.imul(value, 0x846ca68b) >>> 0;
+    value ^= value >>> 16;
+    return value >>> 0;
+  }
+
+  function basePairIdentity(index, sourceState = state) {
+    const value = mixedBasePairValue(index, sourceState);
+    const pair = value & 1 ? ["G", "C"] : ["A", "T"];
+    if ((value >>> 1) & 1) pair.reverse();
+    return { first: pair[0], second: pair[1], label: `${pair[0]}-${pair[1]}` };
+  }
+
+  function nucleotideColor(base, sourceState = state) {
+    const keys = { A: "adenine", T: "thymine", G: "guanine", C: "cytosine" };
+    return sourceState.colors[keys[base]] || sourceState.colors.basePair;
+  }
+
+  function connectedStrandColor(role, sourceState = state) {
+    if (role === "a") return sourceState.colors.templateA;
+    if (role === "b") return sourceState.colors.templateB;
+    return sourceState.colors.newDna;
+  }
+
+  function basePairLineColors(firstRole, secondRole, firstBase, secondBase, sourceState = state) {
+    const mode = basePairColorMode(sourceState);
+    if (mode === "strand") {
+      return [connectedStrandColor(firstRole, sourceState), connectedStrandColor(secondRole, sourceState)];
+    }
+    if (mode === "bases") {
+      return [nucleotideColor(firstBase, sourceState), nucleotideColor(secondBase, sourceState)];
+    }
+    return [sourceState.colors.basePair, sourceState.colors.basePair];
+  }
+
+  function renderBasePairLine(
+    x,
+    firstY,
+    secondY,
+    opacity,
+    { firstRole = "a", secondRole = "b", firstBase = "A", secondBase = "T" } = {}
+  ) {
     const segment = insetBasePairSegment(firstY, secondY);
     if (!segment) return "";
-    return `<line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
-      segment.secondY
-    )}" stroke="${state.colors.basePair}" stroke-width="${fixed(
-      state.basePairWidth
-    )}" stroke-linecap="round" opacity="${precise(opacity)}"/>`;
+    const [firstColor, secondColor] = basePairLineColors(
+      firstRole,
+      secondRole,
+      firstBase,
+      secondBase
+    );
+    const attributes = `stroke-width="${fixed(state.basePairWidth)}" stroke-linecap="round" opacity="${precise(
+      opacity
+    )}"`;
+    if (firstColor === secondColor) {
+      return `<line x1="${fixed(x)}" y1="${precise(
+        segment.firstY
+      )}" x2="${fixed(x)}" y2="${precise(segment.secondY)}" data-pair="${firstBase}-${secondBase}" stroke="${firstColor}" ${attributes}/>`;
+    }
+    const midpoint = (segment.firstY + segment.secondY) / 2;
+    return `<g data-pair="${firstBase}-${secondBase}">
+      <line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
+        midpoint
+      )}" data-half="first" stroke="${firstColor}" ${attributes}/>
+      <line x1="${fixed(x)}" y1="${precise(midpoint)}" x2="${fixed(x)}" y2="${precise(
+        segment.secondY
+      )}" data-half="second" stroke="${secondColor}" ${attributes}/>
+    </g>`;
   }
 
   function renderBasePairs(model) {
@@ -1540,6 +1777,7 @@
     displayedBasePairPositions().forEach((index) => {
       const x = VIEW.x0 + basePairFraction(index) * VIEW.moleculeWidth;
       if (isCutGap(x, 3)) return;
+      const identity = basePairIdentity(index);
       const replication = replicationAt(x, model);
       const yA = templateY(x, "a", model);
       const yB = templateY(x, "b", model);
@@ -1548,19 +1786,34 @@
         const parentalFade =
           (replication.region ? parentalPairFade(replication.profile) : 1) *
           basePairForkDistanceFade(x, yA, yB, model, replication);
-        const pair = renderBasePairLine(x, yA, yB, 0.76 * parentalFade);
+        const pair = renderBasePairLine(x, yA, yB, 0.76 * parentalFade, {
+          firstRole: "a",
+          secondRole: "b",
+          firstBase: identity.first,
+          secondBase: identity.second,
+        });
         if (pair && parentalFade > EPSILON) pairs.push(pair);
       }
 
-      if (state.layers.newDna && replication.region && replication.profile >= NASCENT_PROFILE_THRESHOLD) {
+      if (state.layers.newDna && newDnaVisibleAt(x, replication, model)) {
         const topNewY = nascentY(x, "top", model);
         const bottomNewY = nascentY(x, "bottom", model);
         const daughterFade = daughterDetailFade(replication.profile);
         const daughterOpacity = (0.48 + replication.profile * 0.32) * daughterFade;
         const topDistanceFade = basePairForkDistanceFade(x, yA, topNewY, model, replication);
         const bottomDistanceFade = basePairForkDistanceFade(x, yB, bottomNewY, model, replication);
-        const topPair = renderBasePairLine(x, yA, topNewY, daughterOpacity * topDistanceFade);
-        const bottomPair = renderBasePairLine(x, yB, bottomNewY, daughterOpacity * bottomDistanceFade);
+        const topPair = renderBasePairLine(x, yA, topNewY, daughterOpacity * topDistanceFade, {
+          firstRole: "a",
+          secondRole: "top",
+          firstBase: identity.first,
+          secondBase: identity.second,
+        });
+        const bottomPair = renderBasePairLine(x, yB, bottomNewY, daughterOpacity * bottomDistanceFade, {
+          firstRole: "b",
+          secondRole: "bottom",
+          firstBase: identity.second,
+          secondBase: identity.first,
+        });
         if (topPair && topDistanceFade > EPSILON) pairs.push(topPair);
         if (bottomPair && bottomDistanceFade > EPSILON) pairs.push(bottomPair);
       }
@@ -1615,8 +1868,7 @@
   function renderCrossoverOverpasses(model) {
     if (strandModel() !== "standard" || state.advanced.crossoverGaps) return "";
     const overpasses = [];
-    const count = crossoverCount();
-    const halfWidth = Math.max(7, state.weight * 1.8);
+    const halfWidth = crossoverClipHalfWidth(1.8, 7);
     const sampling = replicationPathSampling(model);
 
     const addOverpass = (x, strand, color, opacity = 1) => {
@@ -1632,7 +1884,12 @@
         toX,
         yForX,
         3,
-        nascent ? (sampleX) => replicationAt(sampleX, model).profile < NASCENT_PROFILE_THRESHOLD : null,
+        nascent
+          ? (sampleX) => {
+              const replication = replicationAt(sampleX, model);
+              return !newDnaVisibleAt(sampleX, replication, model);
+            }
+          : null,
         sampling.anchorXs,
         sampling.localWindows,
         (sampleX) => numericalPathTangent(yForX, sampleX, VIEW.x0, VIEW.x1)
@@ -1645,20 +1902,21 @@
       );
     };
 
-    for (let index = 0; index < count; index += 1) {
-      const x = VIEW.x0 + ((index + 0.5) / count) * VIEW.moleculeWidth;
+    crossoverSites().forEach(({ index, x }) => {
       const replication = replicationAt(x, model);
       const even = index % 2 === 0;
 
       if (!replication.region || !state.layers.newDna) {
         addOverpass(x, even ? "a" : "b", even ? state.colors.templateA : state.colors.templateB);
-        continue;
+        return;
       }
 
-      const daughterMix = daughterDetailFade(replication.profile);
+      const daughterMix = newDnaVisibleAt(x, replication, model)
+        ? daughterDetailFade(replication.profile)
+        : 0;
       addOverpass(x, even ? "a" : "b", even ? state.colors.templateA : state.colors.templateB);
       addOverpass(x, even ? "bottom" : "top", state.colors.newDna, daughterMix);
-    }
+    });
 
     return `<g aria-label="Alternating strand overpasses">${overpasses.join("")}</g>`;
   }
@@ -1670,7 +1928,7 @@
   function renderOrigins(model) {
     return model.origins
       .map((origin) => {
-        const selected = state.selectedOriginId === origin.id;
+        const selected = state.selectedOriginId === origin.id && !state.selectedFork;
         const dragged = dragState?.originId === origin.id && dragState.role === "origin";
         const x = VIEW.x0 + origin.position * VIEW.moleculeWidth;
         const leftX = VIEW.x0 + origin.leftPosition * VIEW.moleculeWidth;
@@ -1682,7 +1940,7 @@
         const replication = replicationAt(x, model);
         const labelY = clamp(VIEW.centerY + replication.amount + 42, 370, 500);
         const selectionRing = selected
-          ? `<circle class="rs-ui-only" cx="0" cy="0" r="17" fill="none" stroke="#067e94" stroke-width="3" opacity="0.55"/>`
+          ? `<circle class="rs-ui-only" cx="0" cy="0" r="17" fill="none" stroke="${state.colors.templateA}" stroke-width="3" opacity="0.55"/>`
           : "";
         const label = state.layers.labels
           ? `<g class="rs-ui-only" transform="${fixedUiTransform(x, labelY)}"><text x="0" y="4" fill="${canvasInkColor()}" font-family="Inter, Segoe UI, sans-serif" font-size="13" font-weight="700" text-anchor="middle">O${
@@ -1723,16 +1981,21 @@
       : "";
     const chevron = isLeft ? "M 3 -5 L -3 0 L 3 5" : "M -3 -5 L 3 0 L -3 5";
     const dragged = dragState?.role === "fork" && dragState.originId === origin.id && dragState.side === side;
+    const selected = state.selectedFork?.originId === origin.id && state.selectedFork?.side === side;
+    const selectionRing = selected
+      ? `<circle class="rs-fork-selection-ring" cx="0" cy="0" r="16" fill="none" stroke="${state.colors.templateA}" stroke-width="3" opacity="0.58"/>`
+      : "";
     const terminalOpacity = clamp(isLeft ? origin.leftTerminalOpacity ?? 1 : origin.rightTerminalOpacity ?? 1, 0, 1);
 
     return `<g transform="${fixedUiTransform(x, VIEW.centerY)}" style="--rs-fork-terminal-opacity:${precise(
       terminalOpacity
     )}"><g class="rs-fork-terminal-indicator">${arrow}${label}</g><g class="rs-fork-handle rs-ui-only${
       dragged ? " is-dragged" : ""
-    }" data-role="fork" data-origin-id="${
+    }${selected ? " is-selected" : ""}" data-role="fork" data-origin-id="${
       origin.id
     }" data-side="${side}">
         <g class="rs-fork-control-visual">
+          ${selectionRing}
           <circle cx="0" cy="0" r="11" fill="#ffffff" stroke="#142126" stroke-width="2"/>
           <path d="${chevron}" fill="none" stroke="#142126" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </g>
@@ -1741,13 +2004,27 @@
     </g>`;
   }
 
-  function renderForks(model) {
+  function forkDescriptors(model) {
     let forkNumber = 1;
-    const forks = [];
+    const descriptors = [];
     model.origins.forEach((origin) => {
-      if (origin.leftActive) forks.push(renderFork(origin, "left", forkNumber++));
-      if (origin.rightActive) forks.push(renderFork(origin, "right", forkNumber++));
+      if (origin.leftActive) descriptors.push({ origin, side: "left", number: forkNumber++ });
+      if (origin.rightActive) descriptors.push({ origin, side: "right", number: forkNumber++ });
     });
+    return descriptors;
+  }
+
+  function selectedForkDescriptor(model) {
+    if (!state.selectedFork) return null;
+    return (
+      forkDescriptors(model).find(
+        ({ origin, side }) => origin.id === state.selectedFork.originId && side === state.selectedFork.side
+      ) || null
+    );
+  }
+
+  function renderForks(model) {
+    const forks = forkDescriptors(model).map(({ origin, side, number }) => renderFork(origin, side, number));
     return `<g aria-label="Active replication forks">${forks.join("")}</g>`;
   }
 
@@ -1835,7 +2112,14 @@
     const originX = bounds.left + frame.clientLeft;
     const originY = bounds.top + frame.clientTop;
     const anchor = transformedSvgPoint(VIEW.x0, VIEW.centerY, matrix);
-    const xStep = transformedSvgPoint(VIEW.x0 + 96, VIEW.centerY, matrix);
+    // A fixed genomic column count keeps the grid independent of base-pair
+    // resolution while guaranteeing lines through both ruler endpoints. For
+    // odd resolutions, those endpoints are also base-pair lattice sites.
+    const xStep = transformedSvgPoint(
+      VIEW.x0 + VIEW.moleculeWidth / GRID_COLUMN_COUNT,
+      VIEW.centerY,
+      matrix
+    );
     const yStep = transformedSvgPoint(VIEW.x0, VIEW.centerY + 80, matrix);
     const spacingX = Math.max(4, Math.hypot(xStep.x - anchor.x, xStep.y - anchor.y));
     const spacingY = Math.max(4, Math.hypot(yStep.x - anchor.x, yStep.y - anchor.y));
@@ -1990,22 +2274,18 @@
     const bounds = forkTravelBounds(sourceState);
     const travelIncrement = elapsed * FORK_TRAVEL_PER_MILLISECOND * speed;
     if (discreteAnimationEnabled(sourceState)) {
+      const step = basePairStepFraction(sourceState);
       let clock = forkPlaybackClocks.get(sourceState);
       if (!clock || Math.abs(clock.lastTravel - sourceState.forkTravel) > 1e-10) {
-        clock = {
-          anchor: sourceState.forkTravel,
-          continuousTravel: sourceState.forkTravel,
-          lastTravel: sourceState.forkTravel,
-        };
+        clock = { lastTravel: sourceState.forkTravel, remainder: 0 };
       }
-      clock.continuousTravel = clamp(clock.continuousTravel + travelIncrement, bounds.zero, bounds.full);
-      sourceState.forkTravel =
-        clock.continuousTravel >= bounds.full - Number.EPSILON
-          ? bounds.full
-          : snapForkTravel(clock.continuousTravel, sourceState, {
-              anchor: clock.anchor,
-              mode: "floor",
-            });
+      const accumulated = clock.remainder + travelIncrement;
+      const completedSteps = Math.floor(accumulated / step + 1e-10);
+      const steppedTravel = sourceState.forkTravel + completedSteps * step;
+      sourceState.forkTravel = clamp(steppedTravel, bounds.zero, bounds.full);
+      clock.remainder = sourceState.forkTravel >= bounds.full - Number.EPSILON
+        ? 0
+        : accumulated - completedSteps * step;
       clock.lastTravel = sourceState.forkTravel;
       forkPlaybackClocks.set(sourceState, clock);
     } else {
@@ -2024,11 +2304,20 @@
     } ${-VIEW.centerY})`;
   }
 
+  function updateProjectAccent() {
+    elements.app?.style?.setProperty("--rs-template-a", state.colors.templateA);
+  }
+
   function render() {
     let model = getReplicationModel();
     if (synchroniseOriginPositions()) model = getReplicationModel();
     synchroniseSPhaseFromGeometry(model);
-    const selectedOrigin = model.origins.find((origin) => origin.id === state.selectedOriginId);
+    const selectedFork = selectedForkDescriptor(model);
+    if (state.selectedFork && !selectedFork) state.selectedFork = null;
+    const selectedOrigin = !state.selectedFork
+      ? model.origins.find((origin) => origin.id === state.selectedOriginId)
+      : null;
+    updateProjectAccent();
     elements.canvas.classList.toggle("rs-show-all-controls", state.advanced.alwaysShowControls);
 
     elements.canvas.innerHTML = `
@@ -2060,9 +2349,18 @@
 
     updateReadouts(model);
     updateCanvasLegend();
-    elements.selectionMessage.textContent = selectedOrigin
-      ? `O${selectedOrigin.index + 1} at ${genomicPositionAtFraction(selectedOrigin.position)} bp`
-      : "No selection";
+    if (selectedFork) {
+      const position = selectedFork.side === "left"
+        ? selectedFork.origin.leftPosition
+        : selectedFork.origin.rightPosition;
+      elements.selectionMessage.textContent = `F${selectedFork.number} (${selectedFork.side}) at ${genomicPositionAtFraction(
+        position
+      )} bp`;
+    } else {
+      elements.selectionMessage.textContent = selectedOrigin
+        ? `O${selectedOrigin.index + 1} at ${genomicPositionAtFraction(selectedOrigin.position)} bp`
+        : "No selection";
+    }
     updateGrid();
     updateChromosomeRuler();
     refreshContextAction();
@@ -2080,6 +2378,12 @@
       elements.doubleStrandHeightOutput.textContent = `${state.doubleStrandHeight} px`;
     }
     elements.daughterSpacingOutput.textContent = `${state.daughterSpacing} px`;
+    if (elements.newDnaStartDistanceOutput) {
+      elements.newDnaStartDistanceOutput.textContent = newDnaStartDistanceLabel();
+    }
+    if (elements.strandPhaseShiftOutput) {
+      elements.strandPhaseShiftOutput.textContent = strandPhaseShiftLabel();
+    }
     if (elements.transitionTightnessOutput) {
       elements.transitionTightnessOutput.textContent = transitionTightnessLabel();
     }
@@ -2088,7 +2392,7 @@
     }
     elements.speedOutput.textContent = `${state.speed.toFixed(2).replace(/0$/, "")}x`;
     elements.zoomOutput.textContent = `${Math.round(viewState.zoom * 100)}%`;
-    elements.aspectOutput.textContent = `${Math.round(artworkAspectX() * 100)}\u00d7${Math.round(
+    elements.aspectOutput.textContent = `${Math.round(artworkAspectX() * 100)}×${Math.round(
       artworkAspectY() * 100
     )}`;
     elements.lengthStat.textContent = `${basePairCount()} bp`;
@@ -2096,6 +2400,7 @@
     elements.forkStat.textContent = model.activeForkCount;
     elements.replicatedStat.textContent = `${replicated}%`;
     elements.progressControl.value = state.progress;
+    elements.lengthControl.max = maximumLengthForBasePairCount(state);
     elements.clearCutsButton.disabled = state.cuts.length === 0;
     elements.deleteOriginButton.disabled = !state.origins.some((origin) => origin.id === state.selectedOriginId);
     elements.playButton.disabled = state.origins.length === 0;
@@ -2106,7 +2411,9 @@
     synchroniseSPhaseFromGeometry();
     const modelName = strandModel();
     const doubleStrandDetails = modelSupportsDoubleStrandDetails();
+    const pairMode = basePairColorMode();
     if (elements.modelControl) elements.modelControl.value = modelName;
+    elements.lengthControl.max = maximumLengthForBasePairCount(state);
     elements.lengthControl.value = state.length;
     elements.progressControl.value = state.progress;
     elements.progressControl.disabled = state.origins.length === 0;
@@ -2115,6 +2422,12 @@
     elements.weightControl.value = state.weight;
     if (elements.doubleStrandHeightControl) elements.doubleStrandHeightControl.value = state.doubleStrandHeight;
     elements.daughterSpacingControl.value = state.daughterSpacing;
+    if (elements.newDnaStartDistanceControl) {
+      elements.newDnaStartDistanceControl.value = newDnaStartDistance();
+    }
+    if (elements.strandPhaseShiftControl) {
+      elements.strandPhaseShiftControl.value = strandPhaseShift();
+    }
     if (elements.transitionTightnessControl) {
       elements.transitionTightnessControl.value = state.advanced.transitionTightness;
     }
@@ -2122,10 +2435,17 @@
       elements.terminalSmoothingControl.value = terminalSmoothing();
     }
     elements.speedControl.value = state.speed;
+    elements.basePairColorModeControl.value = pairMode;
     elements.templateAColor.value = state.colors.templateA;
     elements.templateBColor.value = state.colors.templateB;
     elements.newDnaColor.value = state.colors.newDna;
     elements.basePairColor.value = state.colors.basePair;
+    elements.adenineColor.value = state.colors.adenine;
+    elements.thymineColor.value = state.colors.thymine;
+    elements.guanineColor.value = state.colors.guanine;
+    elements.cytosineColor.value = state.colors.cytosine;
+    elements.basePairSingleColorOption.hidden = pairMode !== "single";
+    elements.baseIdentityColors.hidden = pairMode !== "bases";
     elements.pairsToggle.checked = state.layers.pairs;
     elements.newDnaToggle.checked = state.layers.newDna;
     elements.labelsToggle.checked = state.layers.labels;
@@ -2133,6 +2453,7 @@
     elements.gridToggle.checked = state.advanced.grid;
     elements.alwaysShowControlsToggle.checked = state.advanced.alwaysShowControls;
     elements.snapToBasePairsToggle.checked = snapEditingEnabled();
+    elements.includeExportBackgroundToggle.checked = state.advanced.includeExportBackground;
     elements.discreteAnimationToggle.checked = discreteAnimationEnabled();
     elements.aspectNarrowButton.disabled = artworkAspectX() <= CONTROL_RANGES.aspectX.min + EPSILON;
     elements.aspectWidenButton.disabled = artworkAspectX() >= CONTROL_RANGES.aspectX.max - EPSILON;
@@ -2146,9 +2467,16 @@
     if (elements.doubleStrandHeightControl) elements.doubleStrandHeightControl.disabled = !doubleStrandDetails;
     elements.pairsToggle.disabled = !doubleStrandDetails;
     elements.newDnaToggle.disabled = modelName === "minimal";
-    elements.basePairColor.disabled = !doubleStrandDetails;
+    elements.basePairColorModeControl.disabled = !doubleStrandDetails;
+    elements.basePairColor.disabled = !doubleStrandDetails || pairMode !== "single";
+    [elements.adenineColor, elements.thymineColor, elements.guanineColor, elements.cytosineColor].forEach(
+      (control) => { control.disabled = !doubleStrandDetails || pairMode !== "bases"; }
+    );
     elements.newDnaColor.disabled = modelName === "minimal";
     elements.crossoverGapsToggle.disabled = modelName !== "standard";
+    elements.newDnaStartDistanceControl.disabled = modelName === "minimal";
+    elements.strandPhaseShiftControl.disabled = modelName !== "standard";
+    updateProjectAccent();
     updatePlayButton();
     updateReadouts();
   }
@@ -2352,6 +2680,7 @@
     if (position === null) return;
     const nearby = state.origins.find((origin) => Math.abs(origin.position - position) * VIEW.moleculeWidth < 28);
     if (nearby) {
+      state.selectedFork = null;
       state.selectedOriginId = nearby.id;
       render();
       setStatus("Origin selected");
@@ -2372,6 +2701,7 @@
     };
     state.origins.push(origin);
     state.origins.sort((a, b) => a.startPosition - b.startPosition);
+    state.selectedFork = null;
     state.selectedOriginId = origin.id;
     synchroniseOriginPositions();
     syncControls();
@@ -2451,6 +2781,7 @@
     sourceState.origins = sourceState.origins.filter((origin) => !mergedIds.has(origin.id));
     sourceState.origins.push(merged);
     sourceState.origins.sort((a, b) => a.startPosition - b.startPosition);
+    sourceState.selectedFork = null;
     sourceState.selectedOriginId = merged.id;
     synchroniseOriginPositions(sourceState);
     return { merged, ...cluster };
@@ -2517,20 +2848,68 @@
     };
   }
 
+  function terminalClosureForFork(geometry, side) {
+    if (!geometry || !["left", "right"].includes(side)) return null;
+    const closesIntoLeftEnd =
+      side === "right" && geometry.rightActive && !geometry.leftActive && geometry.leftReason === "end";
+    if (closesIntoLeftEnd) return { replicatedBoundary: 0, completionBoundary: 0 };
+
+    const closesIntoRightEnd =
+      side === "left" && geometry.leftActive && !geometry.rightActive && geometry.rightReason === "end";
+    if (closesIntoRightEnd) return { replicatedBoundary: 1, completionBoundary: 1 };
+    return null;
+  }
+
+  function terminalClosureBoundaryForFork(geometry, side) {
+    return terminalClosureForFork(geometry, side)?.completionBoundary ?? null;
+  }
+
+  function forkReachedChromosomeEnd(desiredPosition, completionBoundary) {
+    const screenDistance =
+      Math.abs(desiredPosition - completionBoundary) * VIEW.moleculeWidth * viewState.zoom * artworkAspectX();
+    const crossedBoundary = completionBoundary <= EPSILON
+      ? desiredPosition <= completionBoundary
+      : desiredPosition >= completionBoundary;
+    return crossedBoundary || screenDistance <= FORK_COLLAPSE_PX;
+  }
+
   function applyForkDragPosition(activeDrag, pointerPosition, sourceState = state) {
     if (activeDrag?.role !== "fork" || !["left", "right"].includes(activeDrag.side)) return null;
     const origin = sourceState.origins.find((item) => item.id === activeDrag.originId);
-    const geometry = getReplicationModelAtTravel(sourceState.forkTravel, sourceState).origins.find(
-      (item) => item.id === activeDrag.originId
-    );
+    const replicationModel = getReplicationModelAtTravel(sourceState.forkTravel, sourceState);
+    const geometry = replicationModel.origins.find((item) => item.id === activeDrag.originId);
     if (!origin || !geometry) return null;
 
     const desiredPosition = clamp(Number(pointerPosition) || 0, 0, 1);
     const globalTravel = sourceState.forkTravel;
+    const detectedTerminalClosure = terminalClosureForFork(geometry, activeDrag.side);
+    const completionBoundary = Number.isFinite(activeDrag.terminalClosureBoundary)
+      ? activeDrag.terminalClosureBoundary
+      : detectedTerminalClosure?.completionBoundary;
+    const replicatedBoundary = Number.isFinite(activeDrag.terminalReplicatedBoundary)
+      ? activeDrag.terminalReplicatedBoundary
+      : detectedTerminalClosure?.replicatedBoundary;
     let movingPosition = desiredPosition;
     let collapsePending = false;
 
-    if (activeDrag.pairedForks) {
+    if (Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary)) {
+      collapsePending = forkReachedChromosomeEnd(desiredPosition, completionBoundary);
+      movingPosition = collapsePending
+        ? completionBoundary
+        : snapEditingEnabled(sourceState)
+          ? snapFractionToBasePair(desiredPosition, sourceState, { min: 0, max: 1 })
+          : desiredPosition;
+      if (movingPosition === null) return null;
+      const leftPosition = activeDrag.side === "left" ? movingPosition : replicatedBoundary;
+      const rightPosition = activeDrag.side === "right" ? movingPosition : replicatedBoundary;
+      const center = (leftPosition + rightPosition) / 2;
+      origin.startPosition = center;
+      origin.position = center;
+      origin.leftOffset = center - leftPosition - globalTravel;
+      origin.rightOffset = rightPosition - center - globalTravel;
+      activeDrag.terminalClosureBoundary = completionBoundary;
+      activeDrag.terminalReplicatedBoundary = replicatedBoundary;
+    } else if (activeDrag.pairedForks) {
       const oppositePosition = activeDrag.side === "left" ? activeDrag.rightPosition : activeDrag.leftPosition;
       collapsePending = forksShouldCollapse(activeDrag.side, desiredPosition, oppositePosition);
       if (collapsePending) {
@@ -2581,8 +2960,16 @@
     }
 
     activeDrag.collapsePending = collapsePending;
+    sourceState.selectedOriginId = null;
+    sourceState.selectedFork = { originId: origin.id, side: activeDrag.side };
     synchroniseOriginPositions(sourceState);
-    return { origin, geometry, movingPosition, collapsePending };
+    return {
+      origin,
+      geometry,
+      movingPosition,
+      collapsePending,
+      terminalClosure: Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary),
+    };
   }
 
   function mergeTouchingBubbles(originId) {
@@ -2637,6 +3024,7 @@
     state.origins = state.origins.filter((origin) => !replacedIds.has(origin.id));
     state.origins.push(left, right);
     state.origins.sort((a, b) => a.startPosition - b.startPosition);
+    state.selectedFork = null;
     state.selectedOriginId = position <= split ? left.id : right.id;
     synchroniseOriginPositions();
     syncControls();
@@ -2650,6 +3038,7 @@
     pushSnapshot();
     state.origins.splice(index, 1);
     state.selectedOriginId = null;
+    state.selectedFork = null;
     synchroniseOriginPositions();
     syncControls();
     render();
@@ -2731,6 +3120,7 @@
       }
 
       state.selectedOriginId = null;
+      state.selectedFork = null;
       render();
       return;
     }
@@ -2741,7 +3131,13 @@
     const geometry = model.origins.find((item) => item.id === originId);
     if (!origin || !geometry) return;
 
-    state.selectedOriginId = originId;
+    if (role === "fork") {
+      state.selectedOriginId = null;
+      state.selectedFork = { originId, side: target.dataset.side };
+    } else {
+      state.selectedFork = null;
+      state.selectedOriginId = originId;
+    }
     dragState = {
       pointerId: event.pointerId,
       role,
@@ -2755,6 +3151,12 @@
       leftPosition: geometry.leftPosition,
       rightPosition: geometry.rightPosition,
       pairedForks: geometry.leftActive && geometry.rightActive,
+      terminalClosureBoundary: role === "fork"
+        ? terminalClosureForFork(geometry, target.dataset.side)?.completionBoundary ?? null
+        : null,
+      terminalReplicatedBoundary: role === "fork"
+        ? terminalClosureForFork(geometry, target.dataset.side)?.replicatedBoundary ?? null
+        : null,
       collapsePending: false,
       minimumTranslation: -geometry.leftPosition,
       maximumTranslation: 1 - geometry.rightPosition,
@@ -2809,6 +3211,8 @@
     if (!origin || !geometry) return;
 
     if (dragState.role === "origin") {
+      state.selectedFork = null;
+      state.selectedOriginId = dragState.originId;
       const dragResult = applyOriginDragPosition(dragState, normalisedX(point.x));
       if (!dragResult) return;
       setStatus(
@@ -2817,6 +3221,8 @@
           : `Replication bubble moved to ${genomicPositionAtFraction(dragResult.origin.position)} bp`
       );
     } else {
+      state.selectedOriginId = null;
+      state.selectedFork = { originId: dragState.originId, side: dragState.side };
       const dragResult = applyForkDragPosition(dragState, normalisedX(point.x));
       if (!dragResult) return;
       setStatus(`${dragState.side === "left" ? "Left" : "Right"} fork adjusted`);
@@ -2863,6 +3269,7 @@
       if (index >= 0) {
         state.origins.splice(index, 1);
         state.selectedOriginId = null;
+        state.selectedFork = null;
         collapsed = true;
         syncControls();
       }
@@ -2872,7 +3279,13 @@
       shouldMergeCompletedBubbleDrag(completedDrag, event.type) &&
       mergeTouchingBubbles(completedDrag.originId);
     render();
-    if (collapsed) setStatus("Overlapping forks snapped together and the bubble was removed");
+    if (collapsed) {
+      setStatus(
+        Number.isFinite(completedDrag.terminalClosureBoundary)
+          ? "The opposing fork reached the chromosome end and the terminal bubble was removed"
+          : "Overlapping forks snapped together and the bubble was removed"
+      );
+    }
     if (merged) {
       setStatus(
         completedDrag.role === "origin"
@@ -2969,7 +3382,18 @@
     svg.setAttribute("width", fixed(width));
     svg.setAttribute("height", fixed(height));
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    svg.append(title, artwork.cloneNode(true));
+    svg.append(title);
+    if (state.advanced.includeExportBackground) {
+      const background = document.createElementNS(namespace, "rect");
+      background.setAttribute("x", fixed(x));
+      background.setAttribute("y", fixed(y));
+      background.setAttribute("width", fixed(width));
+      background.setAttribute("height", fixed(height));
+      background.setAttribute("fill", state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor);
+      background.setAttribute("data-export-background", "true");
+      svg.append(background);
+    }
+    svg.append(artwork.cloneNode(true));
     svg.querySelector("#rs-export-artwork")?.removeAttribute("id");
     return { element: svg, width, height };
   }
@@ -3247,7 +3671,46 @@
     }
   }
 
-  function saveMp4Blob(blob, filename) {
+  async function requestAnimationSaveHandle(filename) {
+    if (typeof window?.showSaveFilePicker !== "function") {
+      return { handle: null, cancelled: false, supported: false };
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: "MP4 animation",
+            accept: { "video/mp4": [".mp4"] },
+          },
+        ],
+      });
+      return { handle, cancelled: false, supported: true };
+    } catch (error) {
+      if (error?.name === "AbortError") return { handle: null, cancelled: true, supported: true };
+      throw error;
+    }
+  }
+
+  async function saveMp4ToHandle(blob, fileHandle) {
+    const writable = await fileHandle.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+    } catch (error) {
+      try {
+        await writable.abort?.();
+      } catch {
+        // Preserve the original file-write error.
+      }
+      throw error;
+    }
+    clearReadyVideoDownload();
+    return "file";
+  }
+
+  function saveMp4Blob(blob, filename, fileHandle = null) {
+    if (fileHandle) return saveMp4ToHandle(blob, fileHandle);
     publishVideoDownload(blob, filename);
     return "download";
   }
@@ -3550,6 +4013,7 @@
     elements.exportMp4Button.disabled = busy;
     elements.downloadButton.disabled = busy;
     elements.downloadButtonLabel.textContent = busy ? "Generating..." : "Download";
+    if (elements.downloadButtonSpinner) elements.downloadButtonSpinner.hidden = !busy;
     elements.downloadButton.setAttribute("aria-busy", String(busy));
     elements.canvasFrame.toggleAttribute("aria-busy", busy);
   }
@@ -3568,6 +4032,18 @@
 
     const videoState = makeVideoExportState();
     const filename = exportFilename("mp4");
+    let destination;
+    try {
+      destination = await requestAnimationSaveHandle(filename);
+    } catch (error) {
+      setStatus(`Could not choose an animation destination: ${error instanceof Error ? error.message : "unknown error"}`);
+      return;
+    }
+    if (destination.cancelled) {
+      setStatus("Animation export cancelled");
+      return;
+    }
+
     clearReadyVideoDownload();
     setVideoExportBusy(true);
 
@@ -3588,8 +4064,19 @@
         video = await encodeMp4WithRecordedFallback(videoState, canvas, context);
       }
 
-      saveMp4Blob(video, filename);
-      setStatus("MP4 download started — click Save MP4 if the browser did not open its Downloads notification");
+      let saveMethod;
+      try {
+        saveMethod = await saveMp4Blob(video, filename, destination.handle);
+      } catch (fileError) {
+        console.warn("Saving to the selected file failed; falling back to a browser download", fileError);
+        saveMethod = saveMp4Blob(video, filename);
+        setStatus("The selected file could not be written; a browser download was prepared instead");
+      }
+      if (saveMethod === "file") {
+        setStatus("MP4 animation saved to the selected file");
+      } else if (!elements.videoSaveLink.hidden) {
+        setStatus("MP4 download started — click Save MP4 if the browser did not show it");
+      }
     } catch (error) {
       console.error("MP4 export failed", error);
       setStatus(`MP4 export failed: ${error instanceof Error ? error.message : "no compatible encoder was available"}`);
@@ -3598,8 +4085,67 @@
     }
   }
 
+  function storedThemeMode() {
+    try {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem("replisketch-theme") : null;
+      return ["system", "light", "dark"].includes(stored) ? stored : "system";
+    } catch {
+      return "system";
+    }
+  }
+
+  function resolvedTheme(mode = themeMode) {
+    if (mode !== "system") return mode;
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+  }
+
+  function applyTheme(mode, { persist = false } = {}) {
+    themeMode = ["system", "light", "dark"].includes(mode) ? mode : "system";
+    const resolved = resolvedTheme(themeMode);
+    if (document.documentElement) document.documentElement.dataset.theme = resolved;
+    const themeMeta = document.querySelector?.('meta[name="theme-color"]');
+    themeMeta?.setAttribute("content", resolved === "dark" ? "#101719" : "#f4f7f6");
+    if (elements.themeMenuValue) {
+      elements.themeMenuValue.textContent = themeMode[0].toUpperCase() + themeMode.slice(1);
+    }
+    if (elements.themeMenuIcon) {
+      const iconPaths = {
+        system: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
+        light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/>',
+        dark: '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/>',
+      };
+      elements.themeMenuIcon.innerHTML = iconPaths[themeMode];
+    }
+    if (persist) {
+      try {
+        localStorage.setItem("replisketch-theme", themeMode);
+      } catch {
+        // Theme persistence is optional in restricted browsing contexts.
+      }
+    }
+  }
+
+  function cycleTheme() {
+    const modes = ["system", "light", "dark"];
+    applyTheme(modes[(modes.indexOf(themeMode) + 1) % modes.length], { persist: true });
+    setStatus(`Theme set to ${themeMode}`);
+  }
+
+  function setProjectMenu(open, focusFirst = false) {
+    elements.projectMenu.hidden = !open;
+    elements.projectMenuControl.classList.toggle("is-open", open);
+    elements.projectMenuButton.setAttribute("aria-expanded", String(open));
+    if (open) closeDownloadMenu();
+    if (open && focusFirst) elements.projectMenu.querySelector('[role="menuitem"]')?.focus();
+  }
+
+  function closeProjectMenu() {
+    setProjectMenu(false);
+  }
+
   function setDownloadMenu(open, focusFirst = false) {
     elements.downloadMenu.hidden = !open;
+    if (open) closeProjectMenu();
     elements.downloadControl.classList.toggle("is-open", open);
     elements.downloadButton.setAttribute("aria-expanded", String(open));
     if (open && focusFirst) elements.downloadMenu.querySelector("button")?.focus();
@@ -3642,7 +4188,7 @@
       });
     }
     bindContinuousControl(elements.lengthControl, (value) => {
-      state.length = boundedControlValue("length", value);
+      state.length = boundedLengthValue(value, state);
       resetForkPlaybackClock();
       render();
     });
@@ -3653,7 +4199,9 @@
     });
     bindContinuousControl(elements.pairResolutionControl, (value) => {
       state.pairResolution = basePairResolution({ pairResolution: value });
+      state.length = boundedLengthValue(state.length, state);
       resetForkPlaybackClock();
+      syncControls();
       render();
     });
     bindContinuousControl(elements.basePairWidthControl, (value) => {
@@ -3678,6 +4226,27 @@
       state.speed = playbackSpeed({ speed: value });
       updateReadouts();
     });
+    if (elements.newDnaStartDistanceControl) {
+      bindContinuousControl(elements.newDnaStartDistanceControl, (value) => {
+        state.advanced.newDnaStartDistance = boundedControlValue(
+          "newDnaStartDistance",
+          value,
+          DEFAULTS.advanced.newDnaStartDistance
+        );
+        render();
+      });
+    }
+    if (elements.strandPhaseShiftControl) {
+      bindContinuousControl(elements.strandPhaseShiftControl, (value) => {
+        state.advanced.strandPhaseShift = boundedControlValue(
+          "strandPhaseShift",
+          value,
+          DEFAULTS.advanced.strandPhaseShift
+        );
+        render();
+      });
+    }
+
     if (elements.transitionTightnessControl) {
       bindContinuousControl(elements.transitionTightnessControl, (value) => {
         state.advanced.transitionTightness = boundedControlValue(
@@ -3699,11 +4268,24 @@
       });
     }
 
+    elements.basePairColorModeControl.addEventListener("change", () => {
+      pushSnapshot();
+      state.basePairColorMode = BASE_PAIR_COLOR_MODES.has(elements.basePairColorModeControl.value)
+        ? elements.basePairColorModeControl.value
+        : DEFAULTS.basePairColorMode;
+      syncControls();
+      render();
+    });
+
     [
       [elements.templateAColor, "templateA"],
       [elements.templateBColor, "templateB"],
       [elements.newDnaColor, "newDna"],
       [elements.basePairColor, "basePair"],
+      [elements.adenineColor, "adenine"],
+      [elements.thymineColor, "thymine"],
+      [elements.guanineColor, "guanine"],
+      [elements.cytosineColor, "cytosine"],
     ].forEach(([control, key]) => {
       control.addEventListener("pointerdown", beginControlChange);
       control.addEventListener("input", () => {
@@ -3718,6 +4300,7 @@
       [elements.gridToggle, "grid"],
       [elements.alwaysShowControlsToggle, "alwaysShowControls"],
       [elements.snapToBasePairsToggle, "snapToBasePairs"],
+      [elements.includeExportBackgroundToggle, "includeExportBackground"],
     ].forEach(([control, key]) => {
       control.addEventListener("change", () => {
         pushSnapshot();
@@ -3775,6 +4358,19 @@
       event.preventDefault();
       setDownloadMenu(true, true);
     });
+    elements.projectMenuButton.addEventListener("click", () => {
+      setProjectMenu(elements.projectMenu.hidden, !elements.projectMenu.hidden);
+    });
+    elements.projectMenuButton.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowDown") return;
+      event.preventDefault();
+      setProjectMenu(true, true);
+    });
+    elements.themeMenuButton.addEventListener("click", cycleTheme);
+    elements.projectMenu.querySelectorAll('a[role="menuitem"]').forEach((link) => {
+      link.addEventListener("click", closeProjectMenu);
+    });
+
     elements.exportPngButton.addEventListener("click", () => runDownload(exportPng));
     elements.exportSvgButton.addEventListener("click", () => runDownload(exportSvg));
     elements.exportPdfButton.addEventListener("click", () => runDownload(exportPdf));
@@ -3804,6 +4400,7 @@
 
     document.addEventListener("pointerdown", (event) => {
       if (!elements.downloadControl.contains(event.target)) closeDownloadMenu();
+      if (!elements.projectMenuControl.contains(event.target)) closeProjectMenu();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -3832,6 +4429,11 @@
         elements.downloadButton.focus();
         return;
       }
+      if (event.key === "Escape" && !elements.projectMenu.hidden) {
+        closeProjectMenu();
+        elements.projectMenuButton.focus();
+        return;
+      }
       if ((event.key === "Delete" || event.key === "Backspace") && state.selectedOriginId) {
         if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
         event.preventDefault();
@@ -3852,11 +4454,15 @@
     window.addEventListener("beforeunload", () => {
       if (videoDownloadUrl) URL.revokeObjectURL(videoDownloadUrl);
     });
+    window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", () => {
+      if (themeMode === "system") applyTheme("system");
+    });
     window.addEventListener("resize", render);
   }
 
   function collectElements() {
     [
+      "replisketch-app",
       "dnaCanvas",
       "canvasFrame",
       "canvasLegend",
@@ -3870,7 +4476,14 @@
       "downloadControl",
       "downloadButton",
       "downloadButtonLabel",
+      "downloadButtonSpinner",
       "downloadMenu",
+      "projectMenuControl",
+      "projectMenuButton",
+      "projectMenu",
+      "themeMenuButton",
+      "themeMenuIcon",
+      "themeMenuValue",
       "exportPngButton",
       "exportSvgButton",
       "exportPdfButton",
@@ -3891,6 +4504,8 @@
       "weightControl",
       "doubleStrandHeightControl",
       "daughterSpacingControl",
+      "newDnaStartDistanceControl",
+      "strandPhaseShiftControl",
       "transitionTightnessControl",
       "terminalSmoothingControl",
       "speedControl",
@@ -3902,6 +4517,8 @@
       "weightOutput",
       "doubleStrandHeightOutput",
       "daughterSpacingOutput",
+      "newDnaStartDistanceOutput",
+      "strandPhaseShiftOutput",
       "transitionTightnessOutput",
       "terminalSmoothingOutput",
       "speedOutput",
@@ -3920,10 +4537,17 @@
       "originStat",
       "forkStat",
       "replicatedStat",
+      "basePairColorModeControl",
+      "basePairSingleColorOption",
+      "baseIdentityColors",
       "templateAColor",
       "templateBColor",
       "newDnaColor",
       "basePairColor",
+      "adenineColor",
+      "thymineColor",
+      "guanineColor",
+      "cytosineColor",
       "backgroundColorControl",
       "pairsToggle",
       "newDnaToggle",
@@ -3932,13 +4556,16 @@
       "gridToggle",
       "alwaysShowControlsToggle",
       "snapToBasePairsToggle",
+      "includeExportBackgroundToggle",
     ].forEach((id) => {
-      elements[id === "dnaCanvas" ? "canvas" : id] = byId(id);
+      const key = id === "dnaCanvas" ? "canvas" : id === "replisketch-app" ? "app" : id;
+      elements[key] = byId(id);
     });
   }
 
   function initialise() {
     collectElements();
+    applyTheme(storedThemeMode());
     state = makeDefaultState();
     bindControls();
     syncControls();
