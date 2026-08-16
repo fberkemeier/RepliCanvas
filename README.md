@@ -17,18 +17,19 @@ Open the [live RepliSketch app](https://fberkemeier.github.io/RepliSketch/). No 
 ## How it works
 
 1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks.
-2. **Choose the visual language.** Switch between Standard, Schematic duplex, and Minimal lines; adjust length, base-pair resolution, strand dimensions, spacing, layers, colours, and fork shape.
-3. **Explore S phase.** Move the S-phase slider or select **Run**. RepliSketch preserves origin firing order and manually adjusted fork timing as forks merge and reach chromosome ends.
-4. **Navigate the canvas.** Hold <kbd>Ctrl</kbd> while dragging to pan, use the mouse wheel to zoom, and use undo, redo, or reset whenever needed.
+2. **Choose the visual language.** Switch between Standard, Schematic duplex, and Minimal lines; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape.
+3. **Explore S phase.** Move the S-phase slider or select **Run**. Choose discrete animation to advance one base pair at a time; RepliSketch preserves origin firing order and manually adjusted fork timing.
+4. **Keep and revisit a design.** Save a configuration file, then load it later to continue editing every parameter and origin.
+5. **Navigate the canvas.** Hold <kbd>Ctrl</kbd> while dragging to pan, use the mouse wheel to zoom, and use undo, redo, or reset whenever needed.
 
 ## Export
 
-- **PNG** — high-resolution raster image
-- **SVG** — editable vector artwork
-- **PDF** — print-ready vector output
+- **PNG** — transparent high-resolution raster image
+- **SVG** — transparent editable vector artwork
+- **PDF** — transparent print-ready vector artwork
 - **MP4** — 60 fps animation of the complete configured replication timeline
 
-A current Chromium-based browser provides the most reliable MP4 encoding experience.
+A current Chromium-based browser provides the most reliable MP4 encoding experience. Portable MP4/H.264 does not support an alpha channel, so video frames use the configured preview background; the static formats remain transparent.
 
 ## Development
 

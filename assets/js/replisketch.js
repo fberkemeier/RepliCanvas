@@ -11,6 +11,11 @@
   VIEW.moleculeWidth = VIEW.x1 - VIEW.x0;
 
   const EPSILON = 0.0001;
+  const APP_VERSION = "1.0.0";
+  const CONFIG_FORMAT = "RepliSketch";
+  const CONFIG_SCHEMA_VERSION = 1;
+  const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
+  const HEX_COLOUR = /^#[\da-f]{6}$/i;
   const BASE_PAIRS_PER_TURN = 10;
   const CONTROL_RANGES = Object.freeze({
     progress: { min: 0, max: 100 },
@@ -23,6 +28,8 @@
     doubleStrandHeight: { min: 8, max: 56 },
     transitionTightness: { min: -100, max: 100 },
     terminalSmoothing: { min: 0, max: 6 },
+    aspectX: { min: 0.5, max: 2 },
+    aspectY: { min: 0.5, max: 2 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
   const MAX_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.max;
@@ -59,6 +66,7 @@
     doubleStrandHeight: 24,
     daughterSpacing: 152,
     speed: 1,
+    discreteAnimation: false,
     colors: {
       templateA: "#067e94",
       templateB: "#022851",
@@ -77,6 +85,9 @@
       crossoverGaps: false,
       grid: true,
       alwaysShowControls: true,
+      snapToBasePairs: false,
+      aspectX: 1,
+      aspectY: 1,
       backgroundColor: "#f8faf9",
     },
   };
@@ -95,6 +106,7 @@
   let viewState = { zoom: 1, panX: 0, panY: 0 };
   let hoverState = null;
   let modifierState = { shift: false, pan: false };
+  const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -114,7 +126,14 @@
   };
   const fixed = (value) => Number(value).toFixed(1);
   const precise = (value) => Number(value).toFixed(4);
-  const fixedUiTransform = (x, y) => `translate(${fixed(x)} ${fixed(y)}) scale(${precise(1 / viewState.zoom)})`;
+  const fixedUiTransform = (x, y) => {
+    const scaleX = 1 / (viewState.zoom * artworkAspectX());
+    const scaleY = 1 / (viewState.zoom * artworkAspectY());
+    const scale = Math.abs(scaleX - scaleY) < 1e-9
+      ? `scale(${precise(scaleX)})`
+      : `scale(${precise(scaleX)} ${precise(scaleY)})`;
+    return `translate(${fixed(x)} ${fixed(y)}) ${scale}`;
+  };
   const smoothstep = (value) => {
     const t = clamp(value, 0, 1);
     return t * t * (3 - 2 * t);
@@ -183,6 +202,20 @@
     );
   }
 
+  function artworkAspectX(sourceState = state) {
+    return boundedControlValue("aspectX", sourceState?.advanced?.aspectX, DEFAULTS.advanced.aspectX);
+  }
+
+  function artworkAspectY(sourceState = state) {
+    return boundedControlValue("aspectY", sourceState?.advanced?.aspectY, DEFAULTS.advanced.aspectY);
+  }
+
+  function artworkAspectTransform(sourceState = state) {
+    return `translate(${fixed(VIEW.width / 2)} ${fixed(VIEW.centerY)}) scale(${precise(
+      artworkAspectX(sourceState)
+    )} ${precise(artworkAspectY(sourceState))}) translate(${-VIEW.width / 2} ${-VIEW.centerY})`;
+  }
+
   function normaliseStateSchema(sourceState) {
     sourceState.colors = { ...DEFAULTS.colors, ...(sourceState.colors || {}) };
     sourceState.layers = { ...DEFAULTS.layers, ...(sourceState.layers || {}) };
@@ -203,6 +236,10 @@
       sourceState.advanced.terminalSmoothing,
       DEFAULTS.advanced.terminalSmoothing
     );
+    sourceState.advanced.aspectX = artworkAspectX(sourceState);
+    sourceState.advanced.aspectY = artworkAspectY(sourceState);
+    sourceState.advanced.snapToBasePairs = sourceState.advanced.snapToBasePairs === true;
+    sourceState.discreteAnimation = sourceState.discreteAnimation === true;
     sourceState.length = boundedControlValue("length", sourceState.length);
     sourceState.progress = boundedControlValue("progress", sourceState.progress);
     sourceState.basePairWidth = boundedControlValue("basePairWidth", sourceState.basePairWidth);
@@ -212,6 +249,152 @@
     sourceState.speed = playbackSpeed(sourceState);
     sourceState.pairResolution = basePairResolution(sourceState);
     return sourceState;
+  }
+
+  function isPlainRecord(value) {
+    return Object.prototype.toString.call(value) === "[object Object]";
+  }
+
+  function invalidConfiguration(message = "invalid or damaged file") {
+    const error = new Error(message);
+    error.name = "RepliSketchConfigurationError";
+    return error;
+  }
+
+  function configurationNumber(value, path, minimum = -Infinity, maximum = Infinity) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
+      throw invalidConfiguration(`${path} is invalid`);
+    }
+    return value;
+  }
+
+  function sanitiseConfigurationSettings(source, defaults, path) {
+    const supplied = source === undefined ? {} : source;
+    if (!isPlainRecord(supplied)) throw invalidConfiguration(`${path} is invalid`);
+
+    const result = {};
+    Object.entries(defaults).forEach(([key, fallback]) => {
+      const value = Object.prototype.hasOwnProperty.call(supplied, key) ? supplied[key] : fallback;
+      const valuePath = `${path}.${key}`;
+      if (isPlainRecord(fallback)) {
+        result[key] = sanitiseConfigurationSettings(value, fallback, valuePath);
+      } else if (typeof fallback === "number") {
+        result[key] = configurationNumber(value, valuePath);
+      } else if (typeof fallback === "boolean") {
+        if (typeof value !== "boolean") throw invalidConfiguration(`${valuePath} is invalid`);
+        result[key] = value;
+      } else if (typeof fallback === "string") {
+        if (typeof value !== "string" || value.length > 128 || /[\u0000-\u001f]/.test(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        if (HEX_COLOUR.test(fallback) && !HEX_COLOUR.test(value)) {
+          throw invalidConfiguration(`${valuePath} must be a six-digit hexadecimal colour`);
+        }
+        if (key === "strandModel" && !["standard", "elegant", "minimal"].includes(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        result[key] = value;
+      } else {
+        throw invalidConfiguration(`${valuePath} uses an unsupported value`);
+      }
+    });
+    return result;
+  }
+
+  function sanitiseConfigurationState(sourceState) {
+    if (!isPlainRecord(sourceState)) throw invalidConfiguration("state is missing or invalid");
+
+    const candidate = sanitiseConfigurationSettings(sourceState, DEFAULTS, "state");
+    if (Math.abs(candidate.forkTravel) > 2) throw invalidConfiguration("state.forkTravel is invalid");
+    if (!Array.isArray(sourceState.origins)) throw invalidConfiguration("state.origins is invalid");
+
+    const originIds = new Set();
+    candidate.origins = sourceState.origins.map((origin, index) => {
+      const path = `state.origins[${index}]`;
+      if (!isPlainRecord(origin)) throw invalidConfiguration(`${path} is invalid`);
+      if (typeof origin.id !== "string" || !/^[a-z\d][a-z\d_-]{0,63}$/i.test(origin.id)) {
+        throw invalidConfiguration(`${path}.id is invalid`);
+      }
+      if (originIds.has(origin.id)) throw invalidConfiguration(`${path}.id is duplicated`);
+      originIds.add(origin.id);
+      const startPosition = configurationNumber(
+        origin.startPosition ?? origin.position,
+        `${path}.startPosition`,
+        0,
+        1
+      );
+      const position = configurationNumber(origin.position ?? startPosition, `${path}.position`, 0, 1);
+      return {
+        id: origin.id,
+        position,
+        startPosition,
+        leftOffset: configurationNumber(origin.leftOffset, `${path}.leftOffset`, -2, 2),
+        rightOffset: configurationNumber(origin.rightOffset, `${path}.rightOffset`, -2, 2),
+      };
+    });
+    candidate.origins.sort((first, second) => first.startPosition - second.startPosition);
+
+    if (!Array.isArray(sourceState.cuts) || sourceState.cuts.length > 10) {
+      throw invalidConfiguration("state.cuts is invalid");
+    }
+    candidate.cuts = normaliseCutRegions(
+      sourceState.cuts.map((cut, index) => {
+        const path = `state.cuts[${index}]`;
+        if (!isPlainRecord(cut)) throw invalidConfiguration(`${path} is invalid`);
+        return {
+          start: configurationNumber(cut.start, `${path}.start`, 0, 1),
+          end: configurationNumber(cut.end, `${path}.end`, 0, 1),
+        };
+      })
+    );
+
+    const selectedOriginId = sourceState.selectedOriginId;
+    if (selectedOriginId !== undefined && selectedOriginId !== null && !originIds.has(selectedOriginId)) {
+      throw invalidConfiguration("state.selectedOriginId is invalid");
+    }
+    candidate.selectedOriginId = selectedOriginId ?? null;
+    candidate.playing = false;
+    return normaliseStateSchema(candidate);
+  }
+
+  function configurationDocument() {
+    return {
+      format: CONFIG_FORMAT,
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      appVersion: APP_VERSION,
+      savedAt: new Date().toISOString(),
+      state: serializableState(),
+    };
+  }
+
+  function parseConfigurationText(text) {
+    if (typeof text !== "string" || text.length > MAX_CONFIG_FILE_BYTES) {
+      throw invalidConfiguration("file is too large");
+    }
+
+    let documentState;
+    try {
+      documentState = JSON.parse(text);
+    } catch {
+      throw invalidConfiguration();
+    }
+    if (!isPlainRecord(documentState) || documentState.format !== CONFIG_FORMAT) {
+      throw invalidConfiguration("not a RepliSketch configuration");
+    }
+    if (!Number.isInteger(documentState.schemaVersion)) throw invalidConfiguration("schema version is missing");
+    if (documentState.schemaVersion > CONFIG_SCHEMA_VERSION) {
+      throw invalidConfiguration("this configuration was created by a newer RepliSketch version");
+    }
+    if (documentState.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+      throw invalidConfiguration("unsupported configuration version");
+    }
+    if (
+      documentState.appVersion !== undefined &&
+      (typeof documentState.appVersion !== "string" || documentState.appVersion.length > 32)
+    ) {
+      throw invalidConfiguration("app version is invalid");
+    }
+    return sanitiseConfigurationState(documentState.state);
   }
 
   function backgroundLuminance(sourceState = state) {
@@ -335,11 +518,29 @@
     return 1 - influence * (1 - distanceFade);
   }
 
-  function makeOrigins(count) {
+  function reseedNextOriginId(sourceState = state) {
+    const usedIds = new Set((sourceState?.origins || []).map((origin) => origin.id));
+    let largestNumericId = 0;
+    usedIds.forEach((id) => {
+      const match = /^origin-(\d+)$/.exec(id);
+      if (match) largestNumericId = Math.max(largestNumericId, Number(match[1]));
+    });
+    nextOriginId = Math.max(nextOriginId, largestNumericId + 1);
+    while (usedIds.has(`origin-${nextOriginId}`)) nextOriginId += 1;
+    return nextOriginId;
+  }
+
+  function nextAvailableOriginId(sourceState = state) {
+    reseedNextOriginId(sourceState);
+    return `origin-${nextOriginId++}`;
+  }
+
+  function makeOrigins(count, sourceState = DEFAULTS) {
     return Array.from({ length: count }, (_, index) => {
-      const position = (index + 1) / (count + 1);
+      const idealPosition = (index + 1) / (count + 1);
+      const position = snapFractionToBasePair(idealPosition, sourceState) ?? idealPosition;
       return {
-        id: `origin-${nextOriginId++}`,
+        id: nextAvailableOriginId(sourceState),
         position,
         startPosition: position,
         leftOffset: 0,
@@ -400,6 +601,7 @@
     stopAnimation();
     state = normaliseStateSchema(JSON.parse(value));
     state.playing = false;
+    reseedNextOriginId(state);
     syncControls();
     render();
   }
@@ -482,10 +684,20 @@
       .sort((a, b) => a.startPosition - b.startPosition)
       .map((origin, index) => {
         const flags = forkFlags(index);
-        const leftTravel = Math.max(0, travel + origin.leftOffset);
-        const rightTravel = Math.max(0, travel + origin.rightOffset);
-        const leftPosition = flags.left ? Math.max(0, origin.startPosition - leftTravel) : origin.startPosition;
-        const rightPosition = flags.right ? Math.min(1, origin.startPosition + rightTravel) : origin.startPosition;
+        const rawLeftTravel = Math.max(0, travel + origin.leftOffset);
+        const rawRightTravel = Math.max(0, travel + origin.rightOffset);
+        const leftTravel = effectiveForkTravel(travel, origin.leftOffset, sourceState);
+        const rightTravel = effectiveForkTravel(travel, origin.rightOffset, sourceState);
+        const leftPosition = flags.left
+          ? rawLeftTravel >= origin.startPosition - EPSILON
+            ? 0
+            : Math.max(0, origin.startPosition - leftTravel)
+          : origin.startPosition;
+        const rightPosition = flags.right
+          ? rawRightTravel >= 1 - origin.startPosition - EPSILON
+            ? 1
+            : Math.min(1, origin.startPosition + rightTravel)
+          : origin.startPosition;
 
         return {
           ...origin,
@@ -729,6 +941,10 @@
     return (lattice.edgeOffset + position) / lattice.subdivisionCount;
   }
 
+  function basePairStepFraction(sourceState = state) {
+    return 1 / basePairLattice(sourceState).subdivisionCount;
+  }
+
   function genomicPositionAtFraction(fraction, sourceState = state) {
     const lattice = basePairLattice(sourceState);
     const moleculeFraction = clamp(Number(fraction) || 0, 0, 1);
@@ -737,6 +953,109 @@
       0,
       lattice.count
     );
+  }
+
+  function snapFractionToBasePair(
+    fraction,
+    sourceState = state,
+    { min = 0, max = 1 } = {}
+  ) {
+    const lattice = basePairLattice(sourceState);
+    const configuredFraction = Number(fraction);
+    const target = clamp(Number.isFinite(configuredFraction) ? configuredFraction : 0, 0, 1);
+    const configuredMin = Number(min);
+    const configuredMax = Number(max);
+    const firstBoundary = clamp(Number.isFinite(configuredMin) ? configuredMin : 0, 0, 1);
+    const secondBoundary = clamp(Number.isFinite(configuredMax) ? configuredMax : 1, 0, 1);
+    const lower = Math.min(firstBoundary, secondBoundary);
+    const upper = Math.max(firstBoundary, secondBoundary);
+    const latticeEpsilon = 1e-10;
+    const rawFirstIndex = Math.ceil(lower * lattice.subdivisionCount - lattice.edgeOffset - latticeEpsilon);
+    const rawLastIndex = Math.floor(upper * lattice.subdivisionCount - lattice.edgeOffset + latticeEpsilon);
+    const firstIndex = clamp(rawFirstIndex, 0, lattice.count);
+    const lastIndex = clamp(rawLastIndex, 0, lattice.count);
+    if (
+      rawFirstIndex > rawLastIndex ||
+      rawLastIndex < 0 ||
+      rawFirstIndex > lattice.count ||
+      firstIndex > lastIndex
+    ) {
+      return null;
+    }
+    const nearestIndex = clamp(
+      Math.round(target * lattice.subdivisionCount - lattice.edgeOffset),
+      firstIndex,
+      lastIndex
+    );
+    return basePairFraction(nearestIndex, sourceState);
+  }
+
+  function snapEditingEnabled(sourceState = state) {
+    return sourceState?.advanced?.snapToBasePairs === true;
+  }
+
+  function interactionFraction(fraction, sourceState = state, bounds = {}) {
+    const configured = Number(fraction);
+    const continuous = clamp(Number.isFinite(configured) ? configured : 0, 0, 1);
+    if (!snapEditingEnabled(sourceState)) return continuous;
+    return snapFractionToBasePair(continuous, sourceState, bounds);
+  }
+
+  function discreteAnimationEnabled(sourceState = state) {
+    return sourceState?.discreteAnimation === true;
+  }
+
+  function effectiveForkTravel(travel, offset, sourceState = state) {
+    const configuredTravel = Number(travel);
+    const configuredOffset = Number(offset);
+    const rawTravel = Math.max(
+      0,
+      (Number.isFinite(configuredTravel) ? configuredTravel : 0) +
+        (Number.isFinite(configuredOffset) ? configuredOffset : 0)
+    );
+    if (!discreteAnimationEnabled(sourceState)) return rawTravel;
+    if (rawTravel <= EPSILON) return 0;
+
+    const step = basePairStepFraction(sourceState);
+    return Math.floor(rawTravel / step + 1e-10) * step;
+  }
+
+  function snapForkTravel(
+    travel,
+    sourceState = state,
+    { anchor = forkTravelBounds(sourceState).zero, mode = "nearest" } = {}
+  ) {
+    const bounds = forkTravelBounds(sourceState);
+    const configuredTravel = Number(travel);
+    const candidate = clamp(
+      Number.isFinite(configuredTravel) ? configuredTravel : bounds.zero,
+      bounds.zero,
+      bounds.full
+    );
+    if (candidate <= bounds.zero + Number.EPSILON) return bounds.zero;
+    if (candidate >= bounds.full - Number.EPSILON) return bounds.full;
+    const configuredAnchor = Number(anchor);
+    const origin = clamp(
+      Number.isFinite(configuredAnchor) ? configuredAnchor : bounds.zero,
+      bounds.zero,
+      bounds.full
+    );
+    const rawSteps = (candidate - origin) / basePairStepFraction(sourceState);
+    const roundedSteps =
+      mode === "floor"
+        ? Math.floor(rawSteps + 1e-10)
+        : mode === "ceil"
+          ? Math.ceil(rawSteps - 1e-10)
+          : Math.round(rawSteps);
+    return clamp(
+      origin + roundedSteps * basePairStepFraction(sourceState),
+      bounds.zero,
+      bounds.full
+    );
+  }
+
+  function resetForkPlaybackClock(sourceState = state) {
+    if (sourceState && typeof sourceState === "object") forkPlaybackClocks.delete(sourceState);
   }
 
   function basePairDisplayStep() {
@@ -1510,7 +1829,7 @@
     frame.classList.toggle("is-grid-hidden", !state.advanced.grid);
     if (!state.advanced.grid) return;
 
-    const matrix = elements.canvas.querySelector("#rs-world")?.getScreenCTM();
+    const matrix = elements.canvas.querySelector("#rs-artwork-aspect")?.getScreenCTM();
     if (!matrix) return;
     const bounds = frame.getBoundingClientRect();
     const originX = bounds.left + frame.clientLeft;
@@ -1529,7 +1848,7 @@
 
   function updateChromosomeRuler() {
     const ruler = elements.chromosomeRuler;
-    const matrix = elements.canvas.querySelector("#rs-world")?.getScreenCTM();
+    const matrix = elements.canvas.querySelector("#rs-artwork-aspect")?.getScreenCTM();
     if (!ruler || !matrix) return;
 
     const bounds = ruler.getBoundingClientRect();
@@ -1654,7 +1973,11 @@
 
   function setSPhaseTime(percentage, sourceState = state) {
     const target = sourceState.origins.length ? boundedControlValue("progress", percentage) : 0;
-    sourceState.forkTravel = findForkTravelForReplicatedFraction(target, sourceState);
+    const desiredTravel = findForkTravelForReplicatedFraction(target, sourceState);
+    sourceState.forkTravel = discreteAnimationEnabled(sourceState)
+      ? snapForkTravel(desiredTravel, sourceState)
+      : desiredTravel;
+    resetForkPlaybackClock(sourceState);
     const model = getReplicationModelAtTravel(sourceState.forkTravel, sourceState);
     synchroniseSPhaseFromGeometry(model, sourceState);
     synchroniseOriginPositions(sourceState);
@@ -1665,11 +1988,30 @@
     const elapsed = Math.max(0, Number(elapsedMilliseconds) || 0);
     const speed = playbackSpeed(sourceState);
     const bounds = forkTravelBounds(sourceState);
-    sourceState.forkTravel = clamp(
-      sourceState.forkTravel + elapsed * FORK_TRAVEL_PER_MILLISECOND * speed,
-      bounds.zero,
-      bounds.full
-    );
+    const travelIncrement = elapsed * FORK_TRAVEL_PER_MILLISECOND * speed;
+    if (discreteAnimationEnabled(sourceState)) {
+      let clock = forkPlaybackClocks.get(sourceState);
+      if (!clock || Math.abs(clock.lastTravel - sourceState.forkTravel) > 1e-10) {
+        clock = {
+          anchor: sourceState.forkTravel,
+          continuousTravel: sourceState.forkTravel,
+          lastTravel: sourceState.forkTravel,
+        };
+      }
+      clock.continuousTravel = clamp(clock.continuousTravel + travelIncrement, bounds.zero, bounds.full);
+      sourceState.forkTravel =
+        clock.continuousTravel >= bounds.full - Number.EPSILON
+          ? bounds.full
+          : snapForkTravel(clock.continuousTravel, sourceState, {
+              anchor: clock.anchor,
+              mode: "floor",
+            });
+      clock.lastTravel = sourceState.forkTravel;
+      forkPlaybackClocks.set(sourceState, clock);
+    } else {
+      resetForkPlaybackClock(sourceState);
+      sourceState.forkTravel = clamp(sourceState.forkTravel + travelIncrement, bounds.zero, bounds.full);
+    }
     const model = getReplicationModelAtTravel(sourceState.forkTravel, sourceState);
     synchroniseSPhaseFromGeometry(model, sourceState);
     synchroniseOriginPositions(sourceState);
@@ -1702,13 +2044,17 @@
       <rect class="rs-canvas-hit-plane rs-ui-only" width="1200" height="640" fill="transparent"/>
       <g id="rs-world" transform="${worldTransform()}">
         <g id="rs-export-artwork" aria-label="DNA molecule">
-          ${artworkMarkup(model)}
+          <g id="rs-artwork-aspect" transform="${artworkAspectTransform()}">
+            ${artworkMarkup(model)}
+          </g>
         </g>
-        ${renderEndLabels(model)}
-        <g class="rs-ui-only" aria-label="Replication origins">${renderOrigins(model)}</g>
-        ${renderForks(model)}
-        <g aria-label="DNA breaks">${renderCuts()}</g>
-        ${renderContextAction()}
+        <g id="rs-ui-aspect" transform="${artworkAspectTransform()}">
+          ${renderEndLabels(model)}
+          <g class="rs-ui-only" aria-label="Replication origins">${renderOrigins(model)}</g>
+          ${renderForks(model)}
+          <g aria-label="DNA breaks">${renderCuts()}</g>
+          ${renderContextAction()}
+        </g>
       </g>
     `;
 
@@ -1742,6 +2088,9 @@
     }
     elements.speedOutput.textContent = `${state.speed.toFixed(2).replace(/0$/, "")}x`;
     elements.zoomOutput.textContent = `${Math.round(viewState.zoom * 100)}%`;
+    elements.aspectOutput.textContent = `${Math.round(artworkAspectX() * 100)}\u00d7${Math.round(
+      artworkAspectY() * 100
+    )}`;
     elements.lengthStat.textContent = `${basePairCount()} bp`;
     elements.originStat.textContent = state.origins.length;
     elements.forkStat.textContent = model.activeForkCount;
@@ -1783,6 +2132,14 @@
     elements.crossoverGapsToggle.checked = state.advanced.crossoverGaps;
     elements.gridToggle.checked = state.advanced.grid;
     elements.alwaysShowControlsToggle.checked = state.advanced.alwaysShowControls;
+    elements.snapToBasePairsToggle.checked = snapEditingEnabled();
+    elements.discreteAnimationToggle.checked = discreteAnimationEnabled();
+    elements.aspectNarrowButton.disabled = artworkAspectX() <= CONTROL_RANGES.aspectX.min + EPSILON;
+    elements.aspectWidenButton.disabled = artworkAspectX() >= CONTROL_RANGES.aspectX.max - EPSILON;
+    elements.aspectShorterButton.disabled = artworkAspectY() <= CONTROL_RANGES.aspectY.min + EPSILON;
+    elements.aspectTallerButton.disabled = artworkAspectY() >= CONTROL_RANGES.aspectY.max - EPSILON;
+    elements.aspectResetButton.disabled =
+      Math.abs(artworkAspectX() - 1) < EPSILON && Math.abs(artworkAspectY() - 1) < EPSILON;
     elements.backgroundColorControl.value = state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor;
     elements.pairResolutionControl.disabled = !doubleStrandDetails;
     elements.basePairWidthControl.disabled = !doubleStrandDetails;
@@ -1816,9 +2173,11 @@
   }
 
   function screenToWorld(point) {
+    const scaleX = viewState.zoom * artworkAspectX();
+    const scaleY = viewState.zoom * artworkAspectY();
     return {
-      x: VIEW.width / 2 + (point.x - VIEW.width / 2 - viewState.panX) / viewState.zoom,
-      y: VIEW.centerY + (point.y - VIEW.centerY - viewState.panY) / viewState.zoom,
+      x: VIEW.width / 2 + (point.x - VIEW.width / 2 - viewState.panX) / scaleX,
+      y: VIEW.centerY + (point.y - VIEW.centerY - viewState.panY) / scaleY,
     };
   }
 
@@ -1898,10 +2257,12 @@
 
   function setZoom(zoom, focus = { x: VIEW.width / 2, y: VIEW.centerY }) {
     const nextZoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
-    const worldX = VIEW.width / 2 + (focus.x - VIEW.width / 2 - viewState.panX) / viewState.zoom;
-    const worldY = VIEW.centerY + (focus.y - VIEW.centerY - viewState.panY) / viewState.zoom;
-    viewState.panX = focus.x - VIEW.width / 2 - (worldX - VIEW.width / 2) * nextZoom;
-    viewState.panY = focus.y - VIEW.centerY - (worldY - VIEW.centerY) * nextZoom;
+    const aspectX = artworkAspectX();
+    const aspectY = artworkAspectY();
+    const worldX = VIEW.width / 2 + (focus.x - VIEW.width / 2 - viewState.panX) / (viewState.zoom * aspectX);
+    const worldY = VIEW.centerY + (focus.y - VIEW.centerY - viewState.panY) / (viewState.zoom * aspectY);
+    viewState.panX = focus.x - VIEW.width / 2 - (worldX - VIEW.width / 2) * nextZoom * aspectX;
+    viewState.panY = focus.y - VIEW.centerY - (worldY - VIEW.centerY) * nextZoom * aspectY;
     viewState.zoom = nextZoom;
     render();
   }
@@ -1912,12 +2273,37 @@
     setStatus("Preview reset");
   }
 
+  function aspectStatus() {
+    return `Aspect ${Math.round(artworkAspectX() * 100)}% \u00d7 ${Math.round(artworkAspectY() * 100)}%`;
+  }
+
+  function changeArtworkAspect(axis, increment) {
+    const key = axis === "y" ? "aspectY" : "aspectX";
+    const current = key === "aspectY" ? artworkAspectY() : artworkAspectX();
+    const next = boundedControlValue(key, Math.round((current + increment) * 10) / 10, current);
+    if (Math.abs(next - current) < EPSILON) return;
+    pushSnapshot();
+    state.advanced[key] = next;
+    render();
+    setStatus(aspectStatus());
+  }
+
+  function resetArtworkAspect() {
+    if (Math.abs(artworkAspectX() - 1) < EPSILON && Math.abs(artworkAspectY() - 1) < EPSILON) return;
+    pushSnapshot();
+    state.advanced.aspectX = 1;
+    state.advanced.aspectY = 1;
+    render();
+    setStatus("Aspect reset");
+  }
+
   function normalisedX(x) {
     return clamp((x - VIEW.x0) / VIEW.moleculeWidth, 0, 1);
   }
 
   function forksShouldCollapse(side, desiredPosition, oppositePosition) {
-    const screenDistance = Math.abs(desiredPosition - oppositePosition) * VIEW.moleculeWidth * viewState.zoom;
+    const screenDistance =
+      Math.abs(desiredPosition - oppositePosition) * VIEW.moleculeWidth * viewState.zoom * artworkAspectX();
     const crossedPartner = side === "left" ? desiredPosition >= oppositePosition : desiredPosition <= oppositePosition;
     return crossedPartner || screenDistance <= FORK_COLLAPSE_PX;
   }
@@ -1962,7 +2348,8 @@
   }
 
   function addOrigin(x) {
-    const position = normalisedX(x);
+    const position = interactionFraction(normalisedX(x));
+    if (position === null) return;
     const nearby = state.origins.find((origin) => Math.abs(origin.position - position) * VIEW.moleculeWidth < 28);
     if (nearby) {
       state.selectedOriginId = nearby.id;
@@ -1977,7 +2364,7 @@
     pushSnapshot();
     const initialOffset = -state.forkTravel;
     const origin = {
-      id: `origin-${nextOriginId++}`,
+      id: nextAvailableOriginId(state),
       position,
       startPosition: position,
       leftOffset: initialOffset,
@@ -1993,15 +2380,18 @@
   }
 
   function bubbleFromBounds(start, end, sourceState = state) {
-    const center = (start + end) / 2;
-    const halfWidth = Math.max(0, end - start) / 2;
-    const offset = halfWidth - sourceState.forkTravel;
+    const lower = clamp(Math.min(start, end), 0, 1);
+    const upper = clamp(Math.max(start, end), 0, 1);
+    const midpoint = (lower + upper) / 2;
+    const center = snapEditingEnabled(sourceState)
+      ? snapFractionToBasePair(midpoint, sourceState, { min: lower, max: upper }) ?? midpoint
+      : midpoint;
     return {
-      id: `origin-${nextOriginId++}`,
+      id: nextAvailableOriginId(sourceState),
       position: center,
       startPosition: center,
-      leftOffset: offset,
-      rightOffset: offset,
+      leftOffset: center - lower - sourceState.forkTravel,
+      rightOffset: upper - center - sourceState.forkTravel,
     };
   }
 
@@ -2100,8 +2490,22 @@
     const origin = sourceState.origins.find((item) => item.id === activeDrag.originId);
     if (!origin) return null;
     const desiredTranslation = pointerPosition - activeDrag.startPointerPosition;
-    const translation = clamp(desiredTranslation, activeDrag.minimumTranslation, activeDrag.maximumTranslation);
-    origin.startPosition = clamp(activeDrag.originStartPosition + translation, 0, 1);
+    const continuousTranslation = clamp(
+      desiredTranslation,
+      activeDrag.minimumTranslation,
+      activeDrag.maximumTranslation
+    );
+    const minimumPosition = activeDrag.originStartPosition + activeDrag.minimumTranslation;
+    const maximumPosition = activeDrag.originStartPosition + activeDrag.maximumTranslation;
+    const snappedPosition = snapEditingEnabled(sourceState)
+      ? snapFractionToBasePair(activeDrag.originStartPosition + continuousTranslation, sourceState, {
+          min: minimumPosition,
+          max: maximumPosition,
+        })
+      : activeDrag.originStartPosition + continuousTranslation;
+    if (snappedPosition === null) return null;
+    const translation = snappedPosition - activeDrag.originStartPosition;
+    origin.startPosition = clamp(snappedPosition, 0, 1);
     origin.position = origin.startPosition;
     origin.leftOffset = activeDrag.originLeftOffset;
     origin.rightOffset = activeDrag.originRightOffset;
@@ -2113,6 +2517,74 @@
     };
   }
 
+  function applyForkDragPosition(activeDrag, pointerPosition, sourceState = state) {
+    if (activeDrag?.role !== "fork" || !["left", "right"].includes(activeDrag.side)) return null;
+    const origin = sourceState.origins.find((item) => item.id === activeDrag.originId);
+    const geometry = getReplicationModelAtTravel(sourceState.forkTravel, sourceState).origins.find(
+      (item) => item.id === activeDrag.originId
+    );
+    if (!origin || !geometry) return null;
+
+    const desiredPosition = clamp(Number(pointerPosition) || 0, 0, 1);
+    const globalTravel = sourceState.forkTravel;
+    let movingPosition = desiredPosition;
+    let collapsePending = false;
+
+    if (activeDrag.pairedForks) {
+      const oppositePosition = activeDrag.side === "left" ? activeDrag.rightPosition : activeDrag.leftPosition;
+      collapsePending = forksShouldCollapse(activeDrag.side, desiredPosition, oppositePosition);
+      if (collapsePending) {
+        movingPosition = oppositePosition;
+      } else {
+        const minimum = activeDrag.side === "left" ? 0 : oppositePosition;
+        const maximum = activeDrag.side === "left" ? oppositePosition : 1;
+        movingPosition = snapEditingEnabled(sourceState)
+          ? snapFractionToBasePair(desiredPosition, sourceState, { min: minimum, max: maximum })
+          : clamp(desiredPosition, minimum, maximum);
+        if (movingPosition === null) return null;
+      }
+
+      const leftPosition = activeDrag.side === "left" ? movingPosition : oppositePosition;
+      const rightPosition = activeDrag.side === "right" ? movingPosition : oppositePosition;
+      if (snapEditingEnabled(sourceState) && !collapsePending) {
+        const snappedOrigin = snapFractionToBasePair(origin.startPosition, sourceState, {
+          min: leftPosition,
+          max: rightPosition,
+        });
+        if (snappedOrigin === null) return null;
+        origin.startPosition = snappedOrigin;
+        origin.position = snappedOrigin;
+        origin.leftOffset = snappedOrigin - leftPosition - globalTravel;
+        origin.rightOffset = rightPosition - snappedOrigin - globalTravel;
+      } else {
+        const center = (leftPosition + rightPosition) / 2;
+        const halfWidth = (rightPosition - leftPosition) / 2;
+        origin.startPosition = center;
+        origin.position = center;
+        origin.leftOffset = halfWidth - globalTravel;
+        origin.rightOffset = halfWidth - globalTravel;
+      }
+    } else if (activeDrag.side === "left" && geometry.leftActive) {
+      movingPosition = snapEditingEnabled(sourceState)
+        ? snapFractionToBasePair(desiredPosition, sourceState, { min: 0, max: geometry.startPosition })
+        : clamp(desiredPosition, 0, geometry.startPosition);
+      if (movingPosition === null) return null;
+      origin.leftOffset = geometry.startPosition - movingPosition - globalTravel;
+    } else if (activeDrag.side === "right" && geometry.rightActive) {
+      movingPosition = snapEditingEnabled(sourceState)
+        ? snapFractionToBasePair(desiredPosition, sourceState, { min: geometry.startPosition, max: 1 })
+        : clamp(desiredPosition, geometry.startPosition, 1);
+      if (movingPosition === null) return null;
+      origin.rightOffset = movingPosition - geometry.startPosition - globalTravel;
+    } else {
+      return null;
+    }
+
+    activeDrag.collapsePending = collapsePending;
+    synchroniseOriginPositions(sourceState);
+    return { origin, geometry, movingPosition, collapsePending };
+  }
+
   function mergeTouchingBubbles(originId) {
     const result = mergeOverlappingBubbleState(originId);
     if (!result) return false;
@@ -2121,7 +2593,8 @@
   }
 
   function splitBubble(x) {
-    const position = normalisedX(x);
+    const position = interactionFraction(normalisedX(x));
+    if (position === null) return;
     const model = getReplicationModel();
     const region = model.regions.find((item) => position >= item.start && position <= item.end);
     if (!region || region.end - region.start < 0.08) {
@@ -2130,9 +2603,35 @@
     }
     const gap = Math.min(0.03, (region.end - region.start) / 5);
     const minimumWidth = Math.max(0.025, gap);
-    const split = clamp(position, region.start + minimumWidth + gap / 2, region.end - minimumWidth - gap / 2);
-    const left = bubbleFromBounds(region.start, split - gap / 2);
-    const right = bubbleFromBounds(split + gap / 2, region.end);
+    const minimumSplit = region.start + minimumWidth + gap / 2;
+    const maximumSplit = region.end - minimumWidth - gap / 2;
+    const continuousSplit = clamp(position, minimumSplit, maximumSplit);
+    const split = snapEditingEnabled()
+      ? snapFractionToBasePair(continuousSplit, state, { min: minimumSplit, max: maximumSplit })
+      : continuousSplit;
+    if (split === null) {
+      setStatus("Choose a wider replication bubble for base-pair snapping");
+      return;
+    }
+    let leftEnd = split - gap / 2;
+    let rightStart = split + gap / 2;
+    if (snapEditingEnabled()) {
+      const halfBasePairStep = basePairStepFraction() / 2;
+      leftEnd = snapFractionToBasePair(leftEnd, state, {
+        min: region.start + minimumWidth,
+        max: split - halfBasePairStep,
+      });
+      rightStart = snapFractionToBasePair(rightStart, state, {
+        min: split + halfBasePairStep,
+        max: region.end - minimumWidth,
+      });
+      if (leftEnd === null || rightStart === null || leftEnd >= rightStart) {
+        setStatus("Choose a wider replication bubble for base-pair snapping");
+        return;
+      }
+    }
+    const left = bubbleFromBounds(region.start, leftEnd);
+    const right = bubbleFromBounds(rightStart, region.end);
     const replacedIds = new Set(region.originIds);
     pushSnapshot();
     state.origins = state.origins.filter((origin) => !replacedIds.has(origin.id));
@@ -2318,34 +2817,8 @@
           : `Replication bubble moved to ${genomicPositionAtFraction(dragResult.origin.position)} bp`
       );
     } else {
-      const desiredPosition = normalisedX(point.x);
-      const globalTravel = state.forkTravel;
-      const hasTwoForks = dragState.pairedForks;
-
-      if (hasTwoForks) {
-        const oppositePosition = dragState.side === "left" ? dragState.rightPosition : dragState.leftPosition;
-        dragState.collapsePending = forksShouldCollapse(dragState.side, desiredPosition, oppositePosition);
-        const movingPosition = dragState.collapsePending
-          ? oppositePosition
-          : dragState.side === "left"
-            ? clamp(desiredPosition, 0, oppositePosition)
-            : clamp(desiredPosition, oppositePosition, 1);
-        const leftPosition = dragState.side === "left" ? movingPosition : oppositePosition;
-        const rightPosition = dragState.side === "right" ? movingPosition : oppositePosition;
-        const center = (leftPosition + rightPosition) / 2;
-        const halfWidth = (rightPosition - leftPosition) / 2;
-        origin.startPosition = center;
-        origin.position = center;
-        origin.leftOffset = halfWidth - globalTravel;
-        origin.rightOffset = halfWidth - globalTravel;
-      } else if (dragState.side === "left" && geometry.leftActive) {
-        const travel = geometry.startPosition - clamp(desiredPosition, 0, geometry.startPosition);
-        origin.leftOffset = travel - globalTravel;
-      } else if (dragState.side === "right" && geometry.rightActive) {
-        const travel = clamp(desiredPosition, geometry.startPosition, 1) - geometry.startPosition;
-        origin.rightOffset = travel - globalTravel;
-      }
-      synchroniseOriginPositions();
+      const dragResult = applyForkDragPosition(dragState, normalisedX(point.x));
+      if (!dragResult) return;
       setStatus(`${dragState.side === "left" ? "Left" : "Right"} fork adjusted`);
     }
 
@@ -2430,6 +2903,7 @@
     if (animationFrame) cancelAnimationFrame(animationFrame);
     animationFrame = 0;
     previousAnimationTime = 0;
+    resetForkPlaybackClock();
     if (state) state.playing = false;
     if (elements.playButton) updatePlayButton();
   }
@@ -2489,20 +2963,13 @@
     const height = Math.max(1, bounds.height + EXPORT_PADDING * 2);
     const svg = document.createElementNS(namespace, "svg");
     const title = document.createElementNS(namespace, "title");
-    const background = document.createElementNS(namespace, "rect");
     title.textContent = "DNA replication diagram created with RepliSketch";
     svg.setAttribute("xmlns", namespace);
     svg.setAttribute("viewBox", `${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}`);
     svg.setAttribute("width", fixed(width));
     svg.setAttribute("height", fixed(height));
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    background.setAttribute("x", fixed(x));
-    background.setAttribute("y", fixed(y));
-    background.setAttribute("width", fixed(width));
-    background.setAttribute("height", fixed(height));
-    background.setAttribute("fill", state.advanced.backgroundColor || DEFAULTS.advanced.backgroundColor);
-    background.setAttribute("aria-hidden", "true");
-    svg.append(title, background, artwork.cloneNode(true));
+    svg.append(title, artwork.cloneNode(true));
     svg.querySelector("#rs-export-artwork")?.removeAttribute("id");
     return { element: svg, width, height };
   }
@@ -2530,6 +2997,57 @@
     return `replisketch-${basePairCount()}bp-${state.origins.length}-origins.${extension}`;
   }
 
+  function saveConfiguration() {
+    const source = `${JSON.stringify(configurationDocument(), null, 2)}\n`;
+    downloadBlob(
+      new Blob([source], { type: "application/json;charset=utf-8" }),
+      exportFilename("replisketch.json")
+    );
+    setStatus("Configuration saved");
+  }
+
+  function applyConfigurationState(candidate) {
+    const previousState = state;
+    const previousSnapshot = snapshot();
+    stopAnimation();
+    pendingControlSnapshot = null;
+    dragState = null;
+    state = candidate;
+    state.playing = false;
+
+    try {
+      reseedNextOriginId(state);
+      syncControls();
+      render();
+    } catch (error) {
+      state = previousState;
+      syncControls();
+      render();
+      throw error;
+    }
+
+    pushBounded(history, previousSnapshot);
+    redoHistory.length = 0;
+    updateHistoryButtons();
+  }
+
+  async function loadConfigurationFile(file) {
+    if (!file) return false;
+    try {
+      if (!Number.isFinite(file.size) || file.size > MAX_CONFIG_FILE_BYTES) {
+        throw invalidConfiguration("file is too large");
+      }
+      const candidate = parseConfigurationText(await file.text());
+      applyConfigurationState(candidate);
+      setStatus("Configuration loaded");
+      return true;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "invalid or damaged file";
+      setStatus(`Could not load configuration: ${reason}`);
+      return false;
+    }
+  }
+
   function exportSvg() {
     const exported = svgSource();
     downloadBlob(new Blob([exported.source], { type: "image/svg+xml;charset=utf-8" }), exportFilename("svg"));
@@ -2549,7 +3067,9 @@
       const canvas = document.createElement("canvas");
       canvas.width = Math.ceil(exported.width * 2);
       canvas.height = Math.ceil(exported.height * 2);
-      const context = canvas.getContext("2d");
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) throw new Error("Canvas rendering is unavailable");
+      context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
       if (!blob) throw new Error("PNG encoding failed");
@@ -2576,7 +3096,7 @@
     documentForPrint.write(
       `<!doctype html><html><head><title>${exportFilename(
         "pdf"
-      )}</title><style>@page{size:${pageWidth}px ${pageHeight}px;margin:0}html,body{width:${pageWidth}px;height:${pageHeight}px;margin:0;overflow:hidden}svg{display:block;width:100%;height:100%;}</style></head><body>${new XMLSerializer().serializeToString(
+      )}</title><style>@page{size:${pageWidth}px ${pageHeight}px;margin:0}html,body{width:${pageWidth}px;height:${pageHeight}px;margin:0;overflow:hidden;background:transparent}svg{display:block;width:100%;height:100%;background:transparent}</style></head><body>${new XMLSerializer().serializeToString(
         exported.element
       )}</body></html>`
     );
@@ -2646,20 +3166,23 @@
     return withVideoRenderState(videoState, () => {
       const model = getReplicationModelAtTravel(forkTravel, videoState);
       const maxStroke = Math.max(videoState.weight, videoState.basePairWidth);
-      const halfExtent = Math.max(
+      const aspectX = artworkAspectX(videoState);
+      const aspectY = artworkAspectY(videoState);
+      const contentHalfExtent = Math.max(
         80,
-        videoState.daughterSpacing / 2 + doubleStrandHalfHeight(videoState) + maxStroke + EXPORT_PADDING
+        videoState.daughterSpacing / 2 + doubleStrandHalfHeight(videoState) + maxStroke
       );
-      const x = VIEW.x0 - EXPORT_PADDING;
-      const y = VIEW.centerY - halfExtent;
-      const width = VIEW.moleculeWidth + EXPORT_PADDING * 2;
+      const halfExtent = contentHalfExtent * aspectY + EXPORT_PADDING;
+      const width = VIEW.moleculeWidth * aspectX + EXPORT_PADDING * 2;
       const height = halfExtent * 2;
+      const x = VIEW.width / 2 - width / 2;
+      const y = VIEW.centerY - halfExtent;
       const source = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}" width="${fixed(
         width
       )}" height="${fixed(height)}" preserveAspectRatio="xMidYMid meet">
   <title>Animated DNA replication diagram created with RepliSketch</title>
-  <g aria-label="DNA molecule">${artworkMarkup(model)}</g>
+  <g aria-label="DNA molecule" transform="${artworkAspectTransform(videoState)}">${artworkMarkup(model)}</g>
 </svg>`;
       return { source, width, height, model };
     });
@@ -2757,14 +3280,26 @@
       startTravel,
       completionTravel,
       travelPerFrame,
+      discreteStep: discreteAnimationEnabled(videoState) ? basePairStepFraction(videoState) : 0,
       lastFrameIndex: travelPerFrame > 0 ? Math.ceil(travelSpan / travelPerFrame) : 0,
       frameDurationSeconds: 1 / VIDEO_FRAME_RATE,
     };
   }
 
   function videoTravelAtFrame(plan, frameIndex) {
-    return clamp(
+    const continuousTravel = clamp(
       plan.startTravel + Math.max(0, frameIndex) * plan.travelPerFrame,
+      plan.startTravel,
+      plan.completionTravel
+    );
+    if (!plan.discreteStep || continuousTravel >= plan.completionTravel - Number.EPSILON) {
+      return continuousTravel;
+    }
+    const completedSteps = Math.floor(
+      (continuousTravel - plan.startTravel) / plan.discreteStep + 1e-10
+    );
+    return clamp(
+      plan.startTravel + completedSteps * plan.discreteStep,
       plan.startTravel,
       plan.completionTravel
     );
@@ -3108,6 +3643,7 @@
     }
     bindContinuousControl(elements.lengthControl, (value) => {
       state.length = boundedControlValue("length", value);
+      resetForkPlaybackClock();
       render();
     });
     bindContinuousControl(elements.progressControl, (value) => {
@@ -3117,6 +3653,7 @@
     });
     bindContinuousControl(elements.pairResolutionControl, (value) => {
       state.pairResolution = basePairResolution({ pairResolution: value });
+      resetForkPlaybackClock();
       render();
     });
     bindContinuousControl(elements.basePairWidthControl, (value) => {
@@ -3180,12 +3717,22 @@
       [elements.crossoverGapsToggle, "crossoverGaps"],
       [elements.gridToggle, "grid"],
       [elements.alwaysShowControlsToggle, "alwaysShowControls"],
+      [elements.snapToBasePairsToggle, "snapToBasePairs"],
     ].forEach(([control, key]) => {
       control.addEventListener("change", () => {
         pushSnapshot();
         state.advanced[key] = control.checked;
         render();
       });
+    });
+
+    elements.discreteAnimationToggle.addEventListener("change", () => {
+      stopAnimation();
+      pushSnapshot();
+      state.discreteAnimation = elements.discreteAnimationToggle.checked;
+      resetForkPlaybackClock();
+      syncControls();
+      render();
     });
 
     [
@@ -3210,6 +3757,16 @@
     elements.undoButton.addEventListener("click", undo);
     elements.redoButton.addEventListener("click", redo);
     elements.resetButton.addEventListener("click", reset);
+    elements.saveConfigButton.addEventListener("click", saveConfiguration);
+    elements.loadConfigButton.addEventListener("click", () => {
+      elements.configFileInput.value = "";
+      elements.configFileInput.click();
+    });
+    elements.configFileInput.addEventListener("change", async () => {
+      const file = elements.configFileInput.files?.[0];
+      await loadConfigurationFile(file);
+      elements.configFileInput.value = "";
+    });
     elements.downloadButton.addEventListener("click", () => {
       setDownloadMenu(elements.downloadMenu.hidden, !elements.downloadMenu.hidden);
     });
@@ -3239,6 +3796,11 @@
     elements.zoomOutButton.addEventListener("click", () => setZoom(viewState.zoom / 1.25));
     elements.zoomInButton.addEventListener("click", () => setZoom(viewState.zoom * 1.25));
     elements.fitViewButton.addEventListener("click", resetView);
+    elements.aspectNarrowButton.addEventListener("click", () => changeArtworkAspect("x", -0.1));
+    elements.aspectWidenButton.addEventListener("click", () => changeArtworkAspect("x", 0.1));
+    elements.aspectShorterButton.addEventListener("click", () => changeArtworkAspect("y", -0.1));
+    elements.aspectTallerButton.addEventListener("click", () => changeArtworkAspect("y", 0.1));
+    elements.aspectResetButton.addEventListener("click", resetArtworkAspect);
 
     document.addEventListener("pointerdown", (event) => {
       if (!elements.downloadControl.contains(event.target)) closeDownloadMenu();
@@ -3302,6 +3864,9 @@
       "undoButton",
       "redoButton",
       "resetButton",
+      "saveConfigButton",
+      "loadConfigButton",
+      "configFileInput",
       "downloadControl",
       "downloadButton",
       "downloadButtonLabel",
@@ -3329,6 +3894,7 @@
       "transitionTightnessControl",
       "terminalSmoothingControl",
       "speedControl",
+      "discreteAnimationToggle",
       "lengthOutput",
       "progressOutput",
       "pairResolutionOutput",
@@ -3343,6 +3909,13 @@
       "zoomInButton",
       "fitViewButton",
       "zoomOutput",
+      "aspectControls",
+      "aspectNarrowButton",
+      "aspectWidenButton",
+      "aspectResetButton",
+      "aspectShorterButton",
+      "aspectTallerButton",
+      "aspectOutput",
       "lengthStat",
       "originStat",
       "forkStat",
@@ -3358,6 +3931,7 @@
       "crossoverGapsToggle",
       "gridToggle",
       "alwaysShowControlsToggle",
+      "snapToBasePairsToggle",
     ].forEach((id) => {
       elements[id === "dnaCanvas" ? "canvas" : id] = byId(id);
     });

@@ -14,7 +14,11 @@ const testApi = `
   globalThis.__replisketchTest = {
     VIEW,
     advanceForkPlayback,
+    applyForkDragPosition,
     applyOriginDragPosition,
+    artworkAspectTransform,
+    artworkAspectX,
+    artworkAspectY,
     artworkMarkup,
     backgroundLuminance,
     basePairCount,
@@ -23,17 +27,22 @@ const testApi = `
     basePairFraction,
     basePairLattice,
     basePairResolution,
+    basePairStepFraction,
     basePairForkDistanceFade,
     basePairForkInfluence,
     basePairTransitionInfluence,
     boundedControlValue,
+    bubbleFromBounds,
     canvasGridColor,
     canvasInkColor,
+    configurationDocument,
     cutRange,
     daughterDetailFade,
     doubleStrandHalfHeight,
+    discreteAnimationEnabled,
     drawVideoFrame,
     displayedBasePairPositions,
+    effectiveForkTravel,
     encodeMp4WithMediabunnyCodec,
     findForkTravelForReplicatedFraction,
     fixedUiTransform,
@@ -50,6 +59,7 @@ const testApi = `
     isCutGap,
     makeVideoExportState,
     makeDefaultState,
+    makeOrigins,
     mergeOverlappingBubbleState,
     mergeOverlappingBubbleDuringDrag,
     minimalReplicationAt,
@@ -59,8 +69,10 @@ const testApi = `
     niceIntegerCeiling,
     normaliseStateSchema,
     normaliseCutRegions,
+    nextAvailableOriginId,
     nativeWebmMimeTypes,
     parentalPairFade,
+    parseConfigurationText,
     playbackSpeed,
     overlappingBubbleCluster,
     rawBubbleBounds,
@@ -72,6 +84,7 @@ const testApi = `
     replicatedFraction,
     renderBasePairs,
     renderNascentDna,
+    reseedNextOriginId,
     remuxWebmToMp4,
     rulerBasePairPosition,
     rulerMajorEvery,
@@ -80,6 +93,7 @@ const testApi = `
     sampledPath,
     schematicNascentStartProfile,
     saveMp4Blob,
+    screenToWorld,
     setDragState(value) { dragState = value; },
     setElements(value) { Object.assign(elements, value); },
     setSPhaseTime,
@@ -88,6 +102,9 @@ const testApi = `
     setViewState(value) { viewState = value; },
     shouldMergeCompletedBubbleDrag,
     smoothRunPath,
+    snapEditingEnabled,
+    snapForkTravel,
+    snapFractionToBasePair,
     strandModel,
     supportedMp4MimeType,
     synchroniseSPhaseFromGeometry,
@@ -269,6 +286,122 @@ test("base-pair resolution keeps N strict interiors between crossover-anchored l
   assert.ok(
     firstIntervalRungs.every((x) => Math.abs(x - midpointX) > 0.1),
     "an even resolution must not render a midpoint rung"
+  );
+});
+
+test("editing snaps to the centred parity-aware base-pair lattice", () => {
+  const state = freshState();
+  state.advanced.snapToBasePairs = true;
+
+  for (let resolution = 1; resolution <= 10; resolution += 1) {
+    state.pairResolution = resolution;
+    const lattice = api.basePairLattice(state);
+    for (const fraction of [0, 0.017, 0.245, 0.5, 0.781, 0.999, 1]) {
+      const snapped = api.snapFractionToBasePair(fraction, state);
+      const index = api.genomicPositionAtFraction(snapped, state);
+      assert.ok(Number.isInteger(index));
+      assert.ok(Math.abs(snapped - api.basePairFraction(index, state)) < 1e-12);
+    }
+    assert.ok(Math.abs(api.basePairStepFraction(state) - 1 / lattice.subdivisionCount) < 1e-12);
+    if (resolution % 2 === 0) {
+      assert.ok(api.snapFractionToBasePair(0, state) > 0);
+      assert.ok(api.snapFractionToBasePair(1, state) < 1);
+    } else {
+      assert.equal(api.snapFractionToBasePair(0, state), 0);
+      assert.equal(api.snapFractionToBasePair(1, state), 1);
+    }
+  }
+
+  state.pairResolution = 3;
+  const step = api.basePairStepFraction(state);
+  const site = api.basePairFraction(17, state);
+  assert.equal(api.snapFractionToBasePair(site + step * 0.2, state, { min: site, max: site }), site);
+  assert.equal(
+    api.snapFractionToBasePair(site + step / 2, state, { min: site + step * 0.2, max: site + step * 0.8 }),
+    null,
+    "an interval containing no base-pair site must not create a continuous fallback"
+  );
+});
+
+test("the two initial origins are centred on integer base-pair sites", () => {
+  const state = freshState();
+  assert.deepEqual(
+    Array.from(state.origins, (origin) => api.genomicPositionAtFraction(origin.startPosition, state)),
+    [24, 48]
+  );
+  state.origins.forEach((origin) => {
+    const index = api.genomicPositionAtFraction(origin.startPosition, state);
+    assert.ok(Math.abs(origin.startPosition - api.basePairFraction(index, state)) < 1e-12);
+  });
+});
+
+test("snapped bubble and fork drags preserve exact geometry on lattice sites", () => {
+  const state = freshState();
+  state.advanced.snapToBasePairs = true;
+  state.forkTravel = api.basePairStepFraction(state) * 4;
+  state.origins = [
+    {
+      id: "snap-drag",
+      position: api.basePairFraction(36, state),
+      startPosition: api.basePairFraction(36, state),
+      leftOffset: 0,
+      rightOffset: 0,
+    },
+  ];
+  api.setState(state);
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+  let geometry = api.getReplicationModelAtTravel(state.forkTravel, state).origins[0];
+  const forkDrag = {
+    role: "fork",
+    side: "left",
+    originId: "snap-drag",
+    pairedForks: true,
+    leftPosition: geometry.leftPosition,
+    rightPosition: geometry.rightPosition,
+    collapsePending: false,
+  };
+  const fixedRight = geometry.rightPosition;
+  const requested = (api.basePairFraction(34, state) + api.basePairFraction(35, state)) / 2 - 1e-5;
+  const result = api.applyForkDragPosition(forkDrag, requested, state);
+  assert.ok(result);
+  geometry = api.getReplicationModelAtTravel(state.forkTravel, state).origins[0];
+  assert.ok(Math.abs(geometry.leftPosition - api.basePairFraction(34, state)) < 1e-12);
+  assert.equal(geometry.rightPosition, fixedRight, "the fork not being dragged must not move");
+  assert.ok(
+    Math.abs(
+      state.origins[0].startPosition -
+        api.basePairFraction(api.genomicPositionAtFraction(state.origins[0].startPosition, state), state)
+    ) < 1e-12
+  );
+
+  geometry = api.getReplicationModelAtTravel(state.forkTravel, state).origins[0];
+  const originDrag = {
+    role: "origin",
+    originId: "snap-drag",
+    moved: false,
+    startPointerPosition: state.origins[0].startPosition,
+    originStartPosition: state.origins[0].startPosition,
+    originLeftOffset: state.origins[0].leftOffset,
+    originRightOffset: state.origins[0].rightOffset,
+    minimumTranslation: -geometry.leftPosition,
+    maximumTranslation: 1 - geometry.rightPosition,
+  };
+  const dragged = api.applyOriginDragPosition(originDrag, originDrag.startPointerPosition + api.basePairStepFraction(state) * 1.4, state);
+  assert.ok(dragged);
+  const draggedIndex = api.genomicPositionAtFraction(dragged.origin.startPosition, state);
+  assert.ok(Math.abs(dragged.origin.startPosition - api.basePairFraction(draggedIndex, state)) < 1e-12);
+
+  const start = api.basePairFraction(10, state);
+  const end = api.basePairFraction(31, state);
+  const snappedBubble = api.bubbleFromBounds(start, end, state);
+  const bounds = api.rawBubbleBounds(snappedBubble, state);
+  assert.ok(Math.abs(bounds.start - start) < 1e-12);
+  assert.ok(Math.abs(bounds.end - end) < 1e-12);
+  assert.ok(
+    Math.abs(
+      snappedBubble.startPosition -
+        api.basePairFraction(api.genomicPositionAtFraction(snappedBubble.startPosition, state), state)
+    ) < 1e-12
   );
 });
 
@@ -617,6 +750,171 @@ test("playback keeps each fork at a constant world speed as the active-fork coun
   assert.ok(Math.abs(many.progress - api.replicatedFraction(manyAfter)) < 1e-9);
 });
 
+test("discrete S-phase and playback advance on accumulated one-base-pair steps", () => {
+  const continuous = freshState();
+  continuous.origins = [
+    { id: "rate", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 },
+  ];
+  api.setSPhaseTime(0, continuous);
+  const continuousStart = continuous.forkTravel;
+  api.advanceForkPlayback(1000, continuous);
+  const travelPerMillisecond = (continuous.forkTravel - continuousStart) / 1000;
+
+  const state = freshState();
+  state.origins = [
+    { id: "discrete", position: 0.5, startPosition: 0.5, leftOffset: -0.03, rightOffset: 0.02 },
+  ];
+  state.discreteAnimation = true;
+  api.setSPhaseTime(0, state);
+  const bounds = api.forkTravelBounds(state);
+  const step = api.basePairStepFraction(state);
+  const startTravel = state.forkTravel;
+  const offsetsBefore = state.origins.map(({ leftOffset, rightOffset }) => [leftOffset, rightOffset]);
+  const millisecondsPerStep = step / travelPerMillisecond;
+
+  api.advanceForkPlayback(millisecondsPerStep * 0.3, state);
+  api.advanceForkPlayback(millisecondsPerStep * 0.3, state);
+  api.advanceForkPlayback(millisecondsPerStep * 0.3, state);
+  assert.ok(Math.abs(state.forkTravel - startTravel) < 1e-12, "sub-step frame time must accumulate without moving");
+  const beforeJump = api.getReplicationModelAtTravel(state.forkTravel, state);
+  api.advanceForkPlayback(millisecondsPerStep * 0.2, state);
+  const afterJump = api.getReplicationModelAtTravel(state.forkTravel, state);
+  assert.ok(Math.abs(state.forkTravel - startTravel - step) < 1e-10);
+  assert.ok(
+    Math.abs(afterJump.origins[0].rightPosition - beforeJump.origins[0].rightPosition - step) < 1e-10
+  );
+  assert.deepEqual(
+    state.origins.map(({ leftOffset, rightOffset }) => [leftOffset, rightOffset]),
+    offsetsBefore,
+    "discrete playback must preserve firing and manual-offset timing"
+  );
+
+  for (const target of [0, 7, 24, 51, 83, 100]) {
+    api.setSPhaseTime(target, state);
+    assert.ok(Math.abs(state.progress - api.replicatedFraction(api.getReplicationModelAtTravel(state.forkTravel, state))) < 1e-9);
+    if (target === 0) assert.equal(state.forkTravel, bounds.zero);
+    else if (target === 100) assert.equal(state.forkTravel, bounds.full);
+    else {
+      const steps = (state.forkTravel - bounds.zero) / step;
+      assert.ok(Math.abs(steps - Math.round(steps)) < 1e-9);
+    }
+  }
+});
+
+test("discrete animation quantizes delayed forks from their own firing time", () => {
+  const state = freshState();
+  state.discreteAnimation = true;
+  state.forkTravel = 0;
+  state.origins = [
+    { id: "early", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "delayed", position: 0.75, startPosition: 0.75, leftOffset: -0.005, rightOffset: -0.005 },
+  ];
+  const step = api.basePairStepFraction(state);
+  const offsetsBefore = state.origins.map(({ leftOffset, rightOffset }) => [leftOffset, rightOffset]);
+
+  assert.equal(
+    api.effectiveForkTravel(0.00005, 0, state),
+    0,
+    "a positive sub-step remainder must not leak into discrete fork geometry"
+  );
+  const subStepModel = api.getReplicationModelAtTravel(0.00005, state);
+  const earlyBeforeFullStep = subStepModel.origins.find((origin) => origin.id === "early");
+  assert.equal(earlyBeforeFullStep.leftPosition, earlyBeforeFullStep.startPosition);
+  assert.equal(earlyBeforeFullStep.rightPosition, earlyBeforeFullStep.startPosition);
+
+  const firstClockStep = api.getReplicationModelAtTravel(step, state);
+  const delayedBeforeFirstFullStep = firstClockStep.origins.find((origin) => origin.id === "delayed");
+  assert.equal(delayedBeforeFirstFullStep.leftPosition, delayedBeforeFirstFullStep.startPosition);
+  assert.equal(delayedBeforeFirstFullStep.rightPosition, delayedBeforeFirstFullStep.startPosition);
+
+  const secondClockStep = api.getReplicationModelAtTravel(step * 2, state);
+  const delayedAfterFirstFullStep = secondClockStep.origins.find((origin) => origin.id === "delayed");
+  assert.ok(
+    Math.abs(delayedAfterFirstFullStep.startPosition - delayedAfterFirstFullStep.leftPosition - step) < 1e-10
+  );
+  assert.ok(
+    Math.abs(delayedAfterFirstFullStep.rightPosition - delayedAfterFirstFullStep.startPosition - step) < 1e-10
+  );
+  secondClockStep.origins.forEach((origin) => {
+    [origin.leftPosition, origin.rightPosition].forEach((position) => {
+      const index = api.genomicPositionAtFraction(position, state);
+      assert.ok(Math.abs(api.basePairFraction(index, state) - position) < 1e-10);
+    });
+  });
+  assert.deepEqual(
+    state.origins.map(({ leftOffset, rightOffset }) => [leftOffset, rightOffset]),
+    offsetsBefore,
+    "per-fork quantization must not rewrite origin firing offsets"
+  );
+
+  const continuous = structuredClone(state);
+  continuous.discreteAnimation = false;
+  const continuousDelayed = api
+    .getReplicationModelAtTravel(step, continuous)
+    .origins.find((origin) => origin.id === "delayed");
+  assert.ok(continuousDelayed.rightPosition > continuousDelayed.startPosition);
+  assert.ok(continuousDelayed.rightPosition - continuousDelayed.startPosition < step);
+});
+
+test("discrete even-resolution forks and MP4 reach exact chromosome endpoints", () => {
+  const state = freshState();
+  state.discreteAnimation = true;
+  state.pairResolution = 2;
+  const middleIndex = Math.round(api.basePairCount(state) / 2);
+  const originPosition = api.basePairFraction(middleIndex, state);
+  state.origins = [
+    {
+      id: "even-terminal",
+      position: originPosition,
+      startPosition: originPosition,
+      leftOffset: -0.004,
+      rightOffset: 0.003,
+    },
+  ];
+
+  api.setSPhaseTime(100, state);
+  const completed = api.getReplicationModelAtTravel(state.forkTravel, state);
+  assert.equal(completed.origins[0].leftPosition, 0);
+  assert.equal(completed.origins[0].rightPosition, 1);
+  assert.equal(completed.activeForkCount, 0);
+  assert.equal(api.replicatedFraction(completed), 100);
+
+  const plan = api.videoFramePlan(state);
+  const finalTravel = api.videoTravelAtFrame(plan, plan.lastFrameIndex);
+  const finalFrame = api.getReplicationModelAtTravel(finalTravel, state);
+  assert.equal(finalTravel, plan.completionTravel);
+  assert.equal(finalFrame.origins[0].leftPosition, 0);
+  assert.equal(finalFrame.origins[0].rightPosition, 1);
+  assert.equal(api.replicatedFraction(finalFrame), 100);
+});
+
+test("discrete MP4 frames hold each one-base-pair pose without changing duration", () => {
+  const state = freshState();
+  state.discreteAnimation = true;
+  const plan = api.videoFramePlan(state);
+  assert.equal(plan.discreteStep, api.basePairStepFraction(state));
+  let previous = api.videoTravelAtFrame(plan, 0);
+  let observedJump = false;
+  for (let frame = 1; frame <= plan.lastFrameIndex; frame += 1) {
+    const travel = api.videoTravelAtFrame(plan, frame);
+    const difference = travel - previous;
+    if (frame === plan.lastFrameIndex) {
+      assert.equal(travel, plan.completionTravel);
+    } else {
+      assert.ok(
+        Math.abs(difference) < 1e-12 || Math.abs(difference - plan.discreteStep) < 1e-10,
+        `frame ${frame} advanced by ${difference}`
+      );
+      observedJump ||= difference > 0;
+    }
+    previous = travel;
+  }
+  assert.equal(observedJump, true);
+
+  state.discreteAnimation = false;
+  assert.equal(api.videoFramePlan(state).discreteStep, 0);
+});
+
 test("one hundred percent remains reachable with extreme colliding fork offsets", () => {
   const state = freshState();
   state.origins = [
@@ -958,6 +1256,7 @@ test("native MP4 fallback reports unavailable without MediaRecorder", () => {
 });
 
 test("drawing controls precisely cancel the preview zoom", () => {
+  api.setState(freshState());
   api.setViewState({ zoom: 4, panX: 0, panY: 0 });
   assert.match(api.fixedUiTransform(100, 200), /scale\(0\.2500\)$/);
   assert.match(api.worldTransform(), /scale\(4\.0000\)/);
@@ -965,6 +1264,46 @@ test("drawing controls precisely cancel the preview zoom", () => {
   api.setViewState({ zoom: 1.5625, panX: 0, panY: 0 });
   assert.match(api.fixedUiTransform(100, 200), /scale\(0\.6400\)$/);
   assert.equal(api.niceIntegerCeiling(2.1), 5);
+});
+
+test("artwork aspect is persistent, pointer-correct, and shared by preview and video", () => {
+  const state = freshState();
+  state.advanced.aspectX = 1.5;
+  state.advanced.aspectY = 0.75;
+  api.setState(state);
+  api.setViewState({ zoom: 2, panX: 30, panY: -20 });
+
+  assert.equal(api.artworkAspectX(), 1.5);
+  assert.equal(api.artworkAspectY(), 0.75);
+  assert.match(api.artworkAspectTransform(), /scale\(1\.5000 0\.7500\)/);
+  assert.match(api.fixedUiTransform(100, 200), /scale\(0\.3333 0\.6667\)$/);
+
+  const worldPoint = { x: 500, y: 280 };
+  const screenPoint = {
+    x: api.VIEW.width / 2 + 30 + (worldPoint.x - api.VIEW.width / 2) * 2 * 1.5,
+    y: api.VIEW.centerY - 20 + (worldPoint.y - api.VIEW.centerY) * 2 * 0.75,
+  };
+  const recovered = api.screenToWorld(screenPoint);
+  assert.ok(Math.abs(recovered.x - worldPoint.x) < 1e-9);
+  assert.ok(Math.abs(recovered.y - worldPoint.y) < 1e-9);
+
+  const opposite = 0.5;
+  const sevenPixelsAway = opposite - 7 / (api.VIEW.moleculeWidth * 2 * 1.5);
+  const ninePixelsAway = opposite - 9 / (api.VIEW.moleculeWidth * 2 * 1.5);
+  assert.equal(api.forksShouldCollapse("left", sevenPixelsAway, opposite), true);
+  assert.equal(api.forksShouldCollapse("left", ninePixelsAway, opposite), false);
+
+  const video = api.fixedVideoSvgSource(state, state.forkTravel);
+  assert.equal(video.width, api.VIEW.moleculeWidth * 1.5 + 24);
+  assert.match(video.source, /transform="translate\(600\.0 310\.0\) scale\(1\.5000 0\.7500\)/);
+  assert.match(source, /id="rs-artwork-aspect" transform="\$\{artworkAspectTransform\(\)\}"/);
+  assert.match(source, /querySelector\("#rs-artwork-aspect"\)\?\.getScreenCTM\(\)/);
+
+  state.advanced.aspectX = 99;
+  state.advanced.aspectY = 0.1;
+  api.normaliseStateSchema(state);
+  assert.equal(state.advanced.aspectX, 2);
+  assert.equal(state.advanced.aspectY, 0.5);
 });
 
 test("video export preserves the fork schedule in a canonical copy without mutating live settings", () => {
@@ -2274,6 +2613,11 @@ test("advanced canvas controls and permanent hover controls are wired", () => {
   assert.match(html, /id="alwaysShowControlsToggle"[^>]*type="checkbox"[^>]*checked/);
   assert.match(html, /id="transitionTightnessControl"[^>]*min="-100"[^>]*max="100"/);
   assert.match(html, /id="terminalSmoothingControl"[^>]*min="0"[^>]*max="6"[^>]*step="0\.25"/);
+  assert.match(html, /id="snapToBasePairsToggle"[^>]*type="checkbox"/);
+  assert.match(html, /id="discreteAnimationToggle"[^>]*type="checkbox"/);
+  assert.match(html, /Move every active fork one base pair at a time/);
+  assert.match(source, /sourceState\.advanced\.snapToBasePairs/);
+  assert.match(source, /sourceState\.discreteAnimation/);
   assert.doesNotMatch(html, /id="originsToggle"/);
   assert.doesNotMatch(html, /id="simplifiedToggle"/);
   assert.doesNotMatch(source, /elements\.simplifiedToggle/);
@@ -2281,6 +2625,20 @@ test("advanced canvas controls and permanent hover controls are wired", () => {
   assert.match(css, /\.rs-fork-control-visual\s*\{[^}]*opacity:\s*0/s);
   assert.match(css, /\.rs-fork-handle:hover \.rs-fork-control-visual/);
   assert.match(css, /#dnaCanvas\.rs-show-all-controls \.rs-origin-visual/);
+  for (const id of [
+    "aspectControls",
+    "aspectNarrowButton",
+    "aspectWidenButton",
+    "aspectResetButton",
+    "aspectShorterButton",
+    "aspectTallerButton",
+    "aspectOutput",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(css, /\.rs-canvas-frame:hover \.rs-aspect-controls/);
+  assert.match(css, /\.rs-aspect-controls:focus-within/);
+  assert.match(css, /@media \(hover: none\)[\s\S]*\.rs-aspect-controls/);
 });
 
 test("all range controls expose the expanded safe contracts and correct initial readouts", () => {
@@ -2338,12 +2696,108 @@ test("ruler axis continues across the viewport without extending genomic ticks",
   assert.match(css, /\.rs-ruler-axis\s*\{[^}]*right:\s*0;[^}]*left:\s*0;/s);
 });
 
-test("header exposes compact project resources and version metadata", () => {
+test("statusbar exposes compact project resources, version, selection, and latest action", () => {
   assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliSketch"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch#readme"[\s\S]*aria-label="Documentation"/);
   assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
   assert.match(html, /class="rs-project-version">v1\.0\.0<\/span>/);
   assert.match(css, /\.rs-project-version\s*\{[^}]*color:\s*#3c9ab7/s);
+  assert.doesNotMatch(html, /<div class="rs-brand">[\s\S]*?rs-project-meta[\s\S]*?<\/div>\s*<div class="rs-top-actions"/);
+  assert.match(
+    html,
+    /class="rs-status-copy"[\s\S]*id="selectionMessage"[\s\S]*rs-status-separator[\s\S]*id="statusMessage"/
+  );
+  assert.match(html, /class="rs-project-meta rs-status-project-meta"/);
+  assert.match(html, /rs-guide-fork[\s\S]*Drag fork/);
+});
+
+test("browser metadata and configuration file actions are exposed accessibly", () => {
+  assert.match(html, /<title>RepliSketch<\/title>/);
+  assert.match(html, /<link[^>]*rel="icon"[^>]*type="image\/png"[^>]*href="assets\/img\/logo_small\.png"/);
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "assets", "img", "logo_small.png")));
+  assert.match(html, /id="saveConfigButton"[^>]*aria-label="Save configuration"/);
+  assert.match(html, /id="loadConfigButton"[^>]*aria-label="Load configuration"/);
+  assert.match(
+    html,
+    /id="configFileInput"[^>]*type="file"[^>]*accept="\.replisketch\.json,\.json,application\/json"[^>]*hidden/
+  );
+});
+
+test("versioned configuration files round-trip all document settings", () => {
+  const state = freshState();
+  state.length = 135;
+  state.speed = 2.25;
+  state.discreteAnimation = true;
+  state.colors.newDna = "#123abc";
+  state.advanced.snapToBasePairs = true;
+  state.advanced.aspectX = 1.4;
+  state.advanced.aspectY = 0.8;
+  state.origins[0].leftOffset = 0.125;
+  state.cuts = [{ start: 0.2, end: 0.28 }];
+  state.selectedOriginId = state.origins[1].id;
+  api.setState(state);
+
+  const documentState = api.configurationDocument();
+  const loaded = api.parseConfigurationText(JSON.stringify(documentState));
+
+  assert.equal(documentState.format, "RepliSketch");
+  assert.equal(documentState.schemaVersion, 1);
+  assert.equal(documentState.appVersion, "1.0.0");
+  assert.equal(loaded.length, 135);
+  assert.equal(loaded.speed, 2.25);
+  assert.equal(loaded.discreteAnimation, true);
+  assert.equal(loaded.colors.newDna, "#123abc");
+  assert.equal(loaded.advanced.snapToBasePairs, true);
+  assert.equal(loaded.advanced.aspectX, 1.4);
+  assert.equal(loaded.advanced.aspectY, 0.8);
+  assert.equal(loaded.origins[0].leftOffset, 0.125);
+  assert.equal(loaded.cuts[0].start, 0.2);
+  assert.equal(loaded.selectedOriginId, state.origins[1].id);
+  assert.equal(loaded.playing, false);
+});
+
+test("configuration parsing rejects unsafe or structurally invalid documents", () => {
+  const state = freshState();
+  api.setState(state);
+  const valid = api.configurationDocument();
+  const sourceWith = (change) => {
+    const copy = JSON.parse(JSON.stringify(valid));
+    change(copy);
+    return JSON.stringify(copy);
+  };
+
+  assert.throws(() => api.parseConfigurationText("not json"), /invalid or damaged file/);
+  assert.throws(
+    () => api.parseConfigurationText(sourceWith((documentState) => (documentState.schemaVersion = 2))),
+    /newer RepliSketch version/
+  );
+  assert.throws(
+    () =>
+      api.parseConfigurationText(
+        sourceWith((documentState) => (documentState.state.colors.templateA = '\" onload="alert(1)'))
+      ),
+    /hexadecimal colour/
+  );
+  assert.throws(
+    () =>
+      api.parseConfigurationText(
+        sourceWith((documentState) => (documentState.state.origins[1].id = documentState.state.origins[0].id))
+      ),
+    /duplicated/
+  );
+  assert.throws(
+    () => api.parseConfigurationText(sourceWith((documentState) => (documentState.state.cuts = "bad"))),
+    /state\.cuts is invalid/
+  );
+});
+
+test("loaded origin identifiers cannot collide with subsequently created origins", () => {
+  const loadedState = freshState();
+  loadedState.origins = [
+    { id: "origin-450", position: 0.4, startPosition: 0.4, leftOffset: 0, rightOffset: 0 },
+  ];
+  api.reseedNextOriginId(loadedState);
+  assert.equal(api.nextAvailableOriginId(loadedState), "origin-451");
 });
 
 test("moving replication details cross-fade instead of popping", () => {
@@ -2492,7 +2946,7 @@ test("parental base-pair rungs fade at the fork instead of fanning into a bubble
   );
 });
 
-test("custom canvas backgrounds keep overlays legible and reach exports", async () => {
+test("custom canvas backgrounds keep previews legible while static exports remain transparent", async () => {
   const light = freshState();
   light.advanced.backgroundColor = "#ffffff";
   const dark = freshState();
@@ -2503,8 +2957,13 @@ test("custom canvas backgrounds keep overlays legible and reach exports", async 
   assert.match(api.canvasGridColor(dark), /255, 255, 255/);
   assert.match(css, /var\(--rs-grid-line/);
   assert.match(css, /var\(--rs-canvas-ink/);
-  assert.match(source, /background\.setAttribute\("fill", state\.advanced\.backgroundColor/);
+  assert.doesNotMatch(source, /background\.setAttribute\("fill", state\.advanced\.backgroundColor/);
+  assert.match(source, /getContext\("2d", \{ alpha: true \}\)/);
+  assert.match(source, /context\.clearRect\(0, 0, canvas\.width, canvas\.height\)/);
+  assert.match(source, /overflow:hidden;background:transparent/);
+  assert.match(html, /<strong>PNG<\/strong><span>Transparent, 2x<\/span>/);
 
+  // MP4 stays opaque because the supported MP4 codecs do not preserve alpha.
   dark.speed = 5;
   let paintedBackground = "";
   const context = {
