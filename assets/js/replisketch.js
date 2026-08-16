@@ -11,7 +11,7 @@
   VIEW.moleculeWidth = VIEW.x1 - VIEW.x0;
 
   const EPSILON = 0.0001;
-  const APP_VERSION = "1.1.0";
+  const APP_VERSION = "1.0.0";
   const CONFIG_FORMAT = "RepliSketch";
   const CONFIG_SCHEMA_VERSION = 1;
   const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;

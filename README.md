@@ -25,7 +25,7 @@ Then open `http://localhost:8000/` in a current Chromium-based browser. Serving 
 ## How it works
 
 1. **Build the replication model.** Add origins on unreplicated DNA, drag bubbles or individual forks, split bubbles, and use <kbd>Shift</kbd> to add or extend strand breaks. A fork becomes the selected, numbered object as soon as it is moved.
-2. **Choose the visual language.** Switch between Standard, Schematic duplex, and Minimal lines; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape. Molecules can contain up to 500 displayed base pairs.
+2. **Choose the visual language.** Switch between Standard, Straight, and Minimal; adjust length, base-pair resolution, strand dimensions, spacing, aspect, layers, colours, and fork shape. Molecules can contain up to 500 displayed base pairs.
 3. **Colour base pairs.** Use one colour, split each rung between the colours of its connected strands, or assign separate A, T, G, and C colours to a stable shuffled sequence of correctly complementary base pairs.
 4. **Refine the geometry.** Advanced options control where new DNA begins behind each fork, the phase shift between connected helical strands, crossover cutouts, end/merge smoothing, base-pair snapping, the preview grid, and whether exports include the configured background.
 5. **Explore S phase.** Move the S-phase slider or select **Run**. Discrete animation advances in base-pair steps at the same underlying fork speed as continuous playback while preserving origin firing order and manually adjusted fork timing.

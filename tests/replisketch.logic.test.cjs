@@ -2815,7 +2815,7 @@ test("versioned configuration files round-trip all document settings", () => {
 
   assert.equal(documentState.format, "RepliSketch");
   assert.equal(documentState.schemaVersion, 1);
-  assert.equal(documentState.appVersion, "1.1.0");
+  assert.equal(documentState.appVersion, "1.0.0");
   assert.equal(loaded.length, 135);
   assert.equal(loaded.speed, 2.25);
   assert.equal(loaded.discreteAnimation, true);
