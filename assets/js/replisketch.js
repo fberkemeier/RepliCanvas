@@ -1,14 +1,18 @@
 (() => {
   "use strict";
 
-  const VIEW = {
+  const BASE_VIEW = Object.freeze({
     width: 1200,
     height: 640,
     x0: 48,
     x1: 1152,
     centerY: 310,
+  });
+  const BASE_MOLECULE_WIDTH = BASE_VIEW.x1 - BASE_VIEW.x0;
+  const VIEW = {
+    ...BASE_VIEW,
+    moleculeWidth: BASE_MOLECULE_WIDTH,
   };
-  VIEW.moleculeWidth = VIEW.x1 - VIEW.x0;
 
   const EPSILON = 0.0001;
   const APP_VERSION = "1.0.0";
@@ -42,7 +46,8 @@
   const MAX_BASE_PAIR_COUNT = 500;
   const GRID_COLUMN_COUNT = 12;
   const BASE_PAIR_COLOR_MODES = new Set(["single", "strand", "bases"]);
-  const BASE_PAIR_TRANSITION_MODES = new Set(["fade", "grow"]);
+  const BASE_PAIR_TRANSITION_MODES = new Set(["fade", "grow", "instant"]);
+  const LENGTH_MODES = new Set(["scale", "extend"]);
   const BASE_PAIR_VARIANTS = Object.freeze([
     Object.freeze(["A", "T"]),
     Object.freeze(["T", "A"]),
@@ -70,6 +75,7 @@
   const CUT_DRAG_THRESHOLD_PX = 4;
   const PAN_DRAG_THRESHOLD_PX = 4;
   const ASPECT_SLIDER_LIMIT = 100;
+  const MAX_PATH_SAMPLE_POINTS = 12000;
   const VIDEO_FRAME_RATE = 60;
   const VIDEO_BITS_PER_SECOND = 5_000_000;
   const PROGRESS_PER_MILLISECOND = 0.006;
@@ -131,6 +137,7 @@
       alwaysShowControls: true,
       snapToBasePairs: false,
       basePairTransition: "fade",
+      lengthMode: "scale",
       includeExportBackground: false,
       newDnaStartDistance: 0,
       strandPhaseShift: 0,
@@ -196,7 +203,7 @@
   const fixed = (value) => Number(value).toFixed(1);
   const precise = (value) => Number(value).toFixed(4);
   const fixedUiTransform = (x, y) => {
-    const scaleX = 1 / (viewState.zoom * artworkAspectX());
+    const scaleX = 1 / (viewState.zoom * artworkScaleX());
     const scaleY = 1 / (viewState.zoom * artworkAspectY());
     const scale = Math.abs(scaleX - scaleY) < 1e-9
       ? `scale(${precise(scaleX)})`
@@ -384,6 +391,119 @@
     );
   }
 
+  function lengthMode(sourceState = state) {
+    const configured = sourceState?.advanced?.lengthMode;
+    return LENGTH_MODES.has(configured) ? configured : DEFAULTS.advanced.lengthMode;
+  }
+
+  function referenceCrossoverCount() {
+    return Math.max(
+      1,
+      Math.round((CROSSOVER_REFERENCE_LENGTH / BASE_PAIRS_PER_TURN) * 2)
+    );
+  }
+
+  function moleculeWidthForState(sourceState = state) {
+    if (lengthMode(sourceState) !== "extend") return BASE_MOLECULE_WIDTH;
+    const currentCrossovers = Math.max(1, crossoverCount(sourceState));
+    return BASE_MOLECULE_WIDTH * (currentCrossovers / referenceCrossoverCount());
+  }
+
+  function syncViewGeometry(sourceState = state) {
+    const width = Math.max(1, moleculeWidthForState(sourceState));
+    VIEW.x0 = BASE_VIEW.x0;
+    VIEW.moleculeWidth = width;
+    VIEW.x1 = VIEW.x0 + width;
+    return VIEW;
+  }
+
+  function genomeDistanceScale(sourceState = state) {
+    if (lengthMode(sourceState) !== "extend") return 1;
+    return BASE_MOLECULE_WIDTH / Math.max(EPSILON, moleculeWidthForState(sourceState));
+  }
+
+  function gridColumnCount(sourceState = state) {
+    if (lengthMode(sourceState) !== "extend") return GRID_COLUMN_COUNT;
+    // Keep approximately the same genomic/grid scale while ensuring the
+    // repeating CSS grid still lands exactly on the dynamically extended end.
+    return Math.max(
+      1,
+      Math.round(
+        GRID_COLUMN_COUNT * moleculeWidthForState(sourceState) / BASE_MOLECULE_WIDTH
+      )
+    );
+  }
+
+  function resizeGenomeLength(value, sourceState = state) {
+    const configuredPreviousLength = Number(sourceState?.length);
+    const previousLength = clamp(
+      Number.isFinite(configuredPreviousLength) ? configuredPreviousLength : DEFAULTS.length,
+      CONTROL_RANGES.length.min,
+      CONTROL_RANGES.length.max
+    );
+    const nextLength = boundedLengthValue(value, { ...sourceState, length: previousLength });
+    if (Math.abs(nextLength - previousLength) <= EPSILON) {
+      sourceState.length = nextLength;
+      syncViewGeometry(sourceState);
+      return nextLength;
+    }
+
+    if (lengthMode(sourceState) === "extend" && previousLength > EPSILON) {
+      // Extension mode anchors genomic coordinates to the left end. Scaling
+      // every fractional coordinate by old/new preserves the absolute positions
+      // of origins, forks, replicated regions, and breaks while new genome is
+      // appended on the right. Shrinking crops objects beyond the new end.
+      const fractionScale = previousLength / nextLength;
+      const scaleDistance = (valueToScale) =>
+        clamp((Number(valueToScale) || 0) * fractionScale, -2, 2);
+
+      sourceState.forkTravel = scaleDistance(sourceState.forkTravel);
+      sourceState.origins = (sourceState.origins || [])
+        .map((origin) => {
+          const startPosition = (Number(origin.startPosition) || 0) * fractionScale;
+          if (startPosition > 1 + EPSILON) return null;
+          const position = clamp(startPosition, 0, 1);
+          return {
+            ...origin,
+            startPosition: position,
+            position,
+            leftOffset: scaleDistance(origin.leftOffset),
+            rightOffset: scaleDistance(origin.rightOffset),
+          };
+        })
+        .filter(Boolean);
+
+      sourceState.cuts = normaliseCutRegions(
+        (sourceState.cuts || [])
+          .map((cut) => {
+            const range = cutRange(cut);
+            return {
+              start: range.start * fractionScale,
+              end: range.end * fractionScale,
+            };
+          })
+          .filter((cut) => cut.start <= 1 + EPSILON && cut.end >= -EPSILON)
+          .map((cut) => ({
+            start: clamp(cut.start, 0, 1),
+            end: clamp(cut.end, 0, 1),
+          }))
+      );
+
+      const remainingOriginIds = new Set(sourceState.origins.map((origin) => origin.id));
+      if (!remainingOriginIds.has(sourceState.selectedOriginId)) sourceState.selectedOriginId = null;
+      if (!remainingOriginIds.has(sourceState.selectedFork?.originId)) sourceState.selectedFork = null;
+      if (!sourceState.origins.length) {
+        sourceState.forkTravel = 0;
+        sourceState.progress = 0;
+      }
+    }
+
+    sourceState.length = nextLength;
+    syncViewGeometry(sourceState);
+    resetForkPlaybackClock(sourceState);
+    return nextLength;
+  }
+
   function basePairColorMode(sourceState = state) {
     const configured = sourceState?.basePairColorMode;
     return BASE_PAIR_COLOR_MODES.has(configured) ? configured : DEFAULTS.basePairColorMode;
@@ -431,6 +551,36 @@
     return boundedControlValue("aspectY", sourceState?.advanced?.aspectY, DEFAULTS.advanced.aspectY);
   }
 
+  function artworkScaleX(sourceState = state) {
+    return artworkAspectX(sourceState);
+  }
+
+  function artworkTransformComponents(sourceState = state) {
+    const scaleX = artworkAspectX(sourceState);
+    const scaleY = artworkAspectY(sourceState);
+    // A fixed-scale genome grows from the left chromosome end, so horizontal
+    // aspect must use that same anchor or extending the right end would shift
+    // all existing genomic features. Scale-changing bars retain the familiar
+    // centred aspect transform.
+    const pivotX = lengthMode(sourceState) === "extend"
+      ? BASE_VIEW.x0
+      : BASE_VIEW.x0 + moleculeWidthForState(sourceState) / 2;
+    return {
+      scaleX,
+      scaleY,
+      translateX: pivotX * (1 - scaleX),
+      translateY: VIEW.centerY * (1 - scaleY),
+    };
+  }
+
+  function transformedArtworkPoint(x, y, sourceState = state) {
+    const transform = artworkTransformComponents(sourceState);
+    return {
+      x: transform.scaleX * x + transform.translateX,
+      y: transform.scaleY * y + transform.translateY,
+    };
+  }
+
   function aspectKey(axis) {
     return axis === "y" ? "aspectY" : "aspectX";
   }
@@ -470,9 +620,10 @@
   }
 
   function artworkAspectTransform(sourceState = state) {
-    return `translate(${fixed(VIEW.width / 2)} ${fixed(VIEW.centerY)}) scale(${precise(
-      artworkAspectX(sourceState)
-    )} ${precise(artworkAspectY(sourceState))}) translate(${-VIEW.width / 2} ${-VIEW.centerY})`;
+    const transform = artworkTransformComponents(sourceState);
+    return `matrix(${precise(transform.scaleX)} 0 0 ${precise(transform.scaleY)} ${precise(
+      transform.translateX
+    )} ${precise(transform.translateY)})`;
   }
 
   function normaliseStateSchema(sourceState) {
@@ -509,6 +660,7 @@
     sourceState.advanced.alwaysShowControls = sourceState.advanced.alwaysShowControls !== false;
     sourceState.advanced.snapToBasePairs = sourceState.advanced.snapToBasePairs === true;
     sourceState.advanced.basePairTransition = basePairTransitionMode(sourceState);
+    sourceState.advanced.lengthMode = lengthMode(sourceState);
     sourceState.advanced.includeExportBackground = sourceState.advanced.includeExportBackground === true;
     sourceState.discreteAnimation = sourceState.discreteAnimation === true;
     sourceState.pairResolution = basePairResolution(sourceState);
@@ -573,6 +725,9 @@
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         if (key === "basePairTransition" && !BASE_PAIR_TRANSITION_MODES.has(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        if (key === "lengthMode" && !LENGTH_MODES.has(value)) {
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         result[key] = value;
@@ -752,21 +907,25 @@
   }
 
   function referenceBasePairSpacingPx() {
-    return VIEW.moleculeWidth / referenceBasePairSubdivisionCount();
+    return BASE_MOLECULE_WIDTH / referenceBasePairSubdivisionCount();
   }
 
-  function terminalPullSpan(terminalPosition, direction, sourceState = state) {
-    // Preserve the default 40-rung molecule's visual smoothing distance, then
-    // keep that distance stable as genomic length or rung density changes. At
-    // higher genomic density the same on-screen fork transition therefore
-    // spans more base-pair sites instead of collapsing into an abrupt kink.
+  function terminalPullScreenSpan(sourceState = state) {
     return terminalSmoothing(sourceState) * referenceBasePairSpacingPx();
   }
 
+  function terminalPullSpan(terminalPosition, direction, sourceState = state) {
+    // The model stores transition distances before the artwork's horizontal
+    // aspect transform. Divide by aspectX so the rendered fork curvature and
+    // terminal pull retain the same on-screen shape at every aspect ratio.
+    return terminalPullScreenSpan(sourceState) / Math.max(EPSILON, artworkAspectX(sourceState));
+  }
+
   function effectiveTerminalSmoothing(sourceState = state) {
-    const currentPairSpacingPx =
-      VIEW.moleculeWidth / Math.max(1, basePairLattice(sourceState).subdivisionCount);
-    return terminalPullSpan(0.5, "right", sourceState) / currentPairSpacingPx;
+    const currentPairSpacingScreen =
+      (VIEW.moleculeWidth * artworkAspectX(sourceState)) /
+      Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    return terminalPullScreenSpan(sourceState) / currentPairSpacingScreen;
   }
 
   function terminalEdgeBlend(distance, pullSpan = FORK_TERMINAL_BLEND_PX) {
@@ -809,9 +968,12 @@
     });
     if (!Number.isFinite(nearestForkDistance)) return 1;
 
-    const pairSpacing = VIEW.moleculeWidth / Math.max(1, basePairLattice(sourceState).subdivisionCount);
-    const fadeDistance = clamp(pairSpacing * 2, 18, 52);
-    return smoothstep(nearestForkDistance / fadeDistance);
+    const aspectX = Math.max(EPSILON, artworkAspectX(sourceState));
+    const pairSpacingScreen =
+      (VIEW.moleculeWidth * aspectX) /
+      Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    const fadeDistanceScreen = clamp(pairSpacingScreen * 2, 18, 52);
+    return smoothstep((nearestForkDistance * aspectX) / fadeDistanceScreen);
   }
 
   function basePairDistanceFade(firstY, secondY, sourceState = state) {
@@ -906,7 +1068,7 @@
 
   function makeDefaultState() {
     const origins = DEFAULT_ORIGINS.map((origin) => ({ ...origin }));
-    return normaliseStateSchema({
+    const defaultState = normaliseStateSchema({
       ...DEFAULTS,
       basePairSeed: DEFAULTS.basePairSeed,
       colors: { ...DEFAULTS.colors },
@@ -918,6 +1080,8 @@
       selectedFork: null,
       playing: false,
     });
+    syncViewGeometry(defaultState);
+    return defaultState;
   }
 
   function serializableState() {
@@ -1455,7 +1619,7 @@
   }
 
   function crossoverClipHalfWidth(multiplier = 1.15, minimum = 3.5, sourceState = state) {
-    const aspect = Math.max(EPSILON, artworkAspectX(sourceState));
+    const aspect = Math.max(EPSILON, artworkScaleX(sourceState));
     const configuredLength = Math.max(
       CONTROL_RANGES.length.min,
       Number(sourceState?.length) || DEFAULTS.length
@@ -1542,11 +1706,13 @@
     const width = Math.max(1, (region.end - region.start) * VIEW.moleculeWidth);
     const tightness = transitionTightness(sourceState);
     const smoothWidth = 52;
-    const maximumWidth =
+    const maximumScreenWidth =
       tightness < 0
         ? smoothWidth + (sourceState.daughterSpacing / 2 - smoothWidth) * -tightness
         : 0.75 + 51.25 * (1 - tightness) ** 2;
-    return Math.min(maximumWidth, width / 2);
+    const maximumWorldWidth =
+      maximumScreenWidth / Math.max(EPSILON, artworkAspectX(sourceState));
+    return Math.min(maximumWorldWidth, width / 2);
   }
 
   function facingMergeBlend(region, side, model) {
@@ -1596,7 +1762,9 @@
     // approaches a terminal, collapse the transition on its replicated side;
     // this makes the contact frame the limit of the preceding geometry without
     // using edgeBlend to open DNA that the fork has not reached yet.
-    return open ? width : Math.max(0.75, width * (1 - blend));
+    return open
+      ? width
+      : Math.max(0.75 / Math.max(EPSILON, artworkAspectX(sourceState)), width * (1 - blend));
   }
 
   function visualRegionEdgeTransitionWidth(region, side, model, sourceState = state) {
@@ -1631,7 +1799,9 @@
     if (side === "start" ? region.openStart : region.openEnd) return 0;
     const edgeBlend = side === "start" ? region.startBlend || 0 : region.endBlend || 0;
     const startProfile = schematicNascentStartProfile(sourceState);
-    const minimumActiveGap = SCHEMATIC_NASCENT_MIN_GAP_PX * (1 - clamp(edgeBlend, 0, 1));
+    const minimumActiveGap =
+      (SCHEMATIC_NASCENT_MIN_GAP_PX / Math.max(EPSILON, artworkAspectX(sourceState))) *
+      (1 - clamp(edgeBlend, 0, 1));
     if (edgeBlend >= startProfile - EPSILON) return minimumActiveGap;
     const residualProfile = (startProfile - edgeBlend) / Math.max(EPSILON, 1 - edgeBlend);
     const profileInset =
@@ -1658,12 +1828,14 @@
 
     const startY = schematicNascentEndpointY(span.fromX, daughter, region, "start", model, sourceState);
     const endY = schematicNascentEndpointY(span.toX, daughter, region, "end", model, sourceState);
+    const connectionWidth =
+      SCHEMATIC_NASCENT_CONNECTION_PX / Math.max(EPSILON, artworkAspectX(sourceState));
     const startWeight = region.openStart
       ? 0
-      : 1 - smoothstep((x - span.fromX) / SCHEMATIC_NASCENT_CONNECTION_PX);
+      : 1 - smoothstep((x - span.fromX) / connectionWidth);
     const endWeight = region.openEnd
       ? 0
-      : 1 - smoothstep((span.toX - x) / SCHEMATIC_NASCENT_CONNECTION_PX);
+      : 1 - smoothstep((span.toX - x) / connectionWidth);
     const totalWeight = startWeight + endWeight;
     if (totalWeight <= EPSILON) return naturalY;
     const normaliser = Math.max(1, totalWeight);
@@ -1705,6 +1877,26 @@
     return x >= span.fromX - EPSILON && x <= span.toX + EPSILON;
   }
 
+  function newDnaBasePairGrowthAt(x, replication, model, sourceState = state) {
+    if (!newDnaVisibleAt(x, replication, model, sourceState)) return 0;
+    const region = replication.region;
+    const span = nascentSpan(region, model, sourceState);
+    const pairSpacing =
+      VIEW.moleculeWidth / Math.max(1, basePairLattice(sourceState).subdivisionCount);
+    const growthDistance = Math.max(EPSILON, pairSpacing * 2);
+    const startGrowth = region.openStart
+      ? 1
+      : smoothstep((x - span.fromX) / growthDistance);
+    const endGrowth = region.openEnd
+      ? 1
+      : smoothstep((span.toX - x) / growthDistance);
+
+    // The nascent span begins only after the configured New-DNA fork distance.
+    // Rung growth is therefore anchored to that moving boundary and reaches a
+    // complete midpoint join over two base-pair lattice intervals.
+    return clamp(Math.min(startGrowth, endGrowth), 0, 1);
+  }
+
   function replicationTransitionAnchors(model) {
     const anchors = [];
     model.regions.forEach((region) => {
@@ -1719,10 +1911,32 @@
       .filter((value, index, values) => index === 0 || Math.abs(value - values[index - 1]) > EPSILON);
   }
 
+  function adaptivePathSampleStep(requestedStep = 3, sourceState = state) {
+    const aspectX = Math.max(EPSILON, artworkAspectX(sourceState));
+    const requestedScreenStep = Math.max(0.5, Math.abs(Number(requestedStep) || 3));
+    const screenLimitedWorldStep = requestedScreenStep / aspectX;
+    const budgetLimitedWorldStep = VIEW.moleculeWidth / MAX_PATH_SAMPLE_POINTS;
+    let resolved = screenLimitedWorldStep;
+
+    if (strandModel(sourceState) === "standard") {
+      const turns = Math.max(
+        1,
+        (Number(sourceState?.length) || DEFAULTS.length) / BASE_PAIRS_PER_TURN
+      );
+      const turnWidth = VIEW.moleculeWidth / turns;
+      // Keep at least 24 samples per helix turn. This prevents long, dense
+      // genomes from developing flat shoulders or angular crossover segments,
+      // particularly when horizontal aspect magnifies the sampled path.
+      resolved = Math.min(resolved, turnWidth / 24);
+    }
+
+    return Math.max(0.02, budgetLimitedWorldStep, resolved);
+  }
+
   function replicationPathSampling(model, sampleStep = 3) {
     const anchorXs = [];
     const localWindows = [];
-    const step = Math.max(EPSILON, Math.abs(sampleStep));
+    const step = adaptivePathSampleStep(sampleStep);
     const addWindow = (firstX, secondX) => {
       const fromX = Math.min(firstX, secondX);
       const toX = Math.max(firstX, secondX);
@@ -1835,14 +2049,12 @@
     return cutRange({ start: dragState.anchor, end: dragState.current });
   }
 
-  function previewRepairRange() {
-    if (dragState?.role !== "repair-range" || !dragState.moved) return null;
-    return cutRange({ start: dragState.anchor, end: dragState.current });
+  function previewUnreplicateRange() {
+    if (dragState?.role !== "unreplicate-range" || !dragState.moved) return null;
+    return unreplicateInteractionRange(dragState.anchor, dragState.current);
   }
 
   function activeCutRanges() {
-    const repair = previewRepairRange();
-    if (repair) return subtractCutRange(state.cuts, repair);
     const preview = previewCutRange();
     return preview ? normaliseCutRegions([...state.cuts, preview]) : state.cuts.map(cutRange);
   }
@@ -1935,7 +2147,10 @@
   }
 
   function numericalPathTangent(pointForX, x, fromX, toX) {
-    const delta = 0.25;
+    const aspectX = Math.max(EPSILON, artworkAspectX());
+    const turns = Math.max(1, (Number(state?.length) || DEFAULTS.length) / BASE_PAIRS_PER_TURN);
+    const turnWidth = VIEW.moleculeWidth / turns;
+    const delta = Math.max(0.02, Math.min(0.25 / aspectX, turnWidth / 96));
     const leftX = Math.max(fromX, x - delta);
     const rightX = Math.min(toX, x + delta);
     if (rightX - leftX <= EPSILON) return 0;
@@ -1964,7 +2179,7 @@
       currentRun.push({ x, y: pointForX(x), ...(Number.isFinite(slope) ? { slope } : {}) });
     };
 
-    const step = Math.max(EPSILON, Math.abs(sampleStep));
+    const step = adaptivePathSampleStep(sampleStep);
     addPoint(fromX);
     const firstInteriorIndex = Math.floor((fromX - VIEW.x0) / step + EPSILON) + 1;
     const interiorXs = anchorXs.filter((x) => x > fromX + EPSILON && x < toX - EPSILON);
@@ -2069,8 +2284,10 @@
     if (!segment) return "";
     const transition = clamp(Number(visibility) || 0, 0, 1);
     if (transition <= EPSILON) return "";
-    const grows = basePairTransitionMode() === "grow";
-    const pairOpacity = grows ? 1 : transition;
+    const transitionMode = basePairTransitionMode();
+    const grows = transitionMode === "grow";
+    const instant = transitionMode === "instant";
+    const pairOpacity = grows || instant ? 1 : transition;
     const growth = grows ? transition : 1;
     const [firstColor, secondColor] = basePairLineColors(
       firstRole,
@@ -2091,7 +2308,7 @@
         segment.firstY
       )}" x2="${fixed(x)}" y2="${precise(
         segment.secondY
-      )}" data-pair="${firstBase}-${secondBase}" data-transition="fade" stroke="${firstColor}" ${strokeAttributes} opacity="${precise(
+      )}" data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" stroke="${firstColor}" ${strokeAttributes} opacity="${precise(
         pairOpacity
       )}" stroke-linecap="round"/>`;
     }
@@ -2100,7 +2317,7 @@
     // preserve an exact, flat colour boundary where the halves meet. Separate
     // zero-length round-capped strokes restore rounded outer ends while keeping
     // stroke thickness independent of horizontal or vertical aspect scaling.
-    return `<g data-pair="${firstBase}-${secondBase}" data-transition="${grows ? "grow" : "fade"}" opacity="${precise(pairOpacity)}">
+    return `<g data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" opacity="${precise(pairOpacity)}">
       <line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
         firstInnerY
       )}" data-half="first" stroke="${firstColor}" ${strokeAttributes} stroke-linecap="butt"/>
@@ -2120,6 +2337,7 @@
     if (!state.layers.pairs || !modelSupportsDoubleStrandDetails()) return "";
 
     const pairs = [];
+    const transitionMode = basePairTransitionMode();
 
     displayedBasePairPositions().forEach((index) => {
       const x = VIEW.x0 + basePairFraction(index) * VIEW.moleculeWidth;
@@ -2129,43 +2347,53 @@
       const yA = templateY(x, "a", model);
       const yB = templateY(x, "b", model);
 
-      // A parental rung belongs only to unreplicated DNA. Fade it as a fork
-      // approaches from either side, but remove it completely on the first
-      // frame in which the fork has crossed that genomic position.
+      // A parental rung belongs only to unreplicated DNA. Fade or open it as a
+      // fork approaches, or keep it fully opaque until the crossing frame in
+      // Instant mode.
       if (!replication.region) {
-        const parentalFade =
-          parentalPairApproachFade(x, model) *
-          basePairForkDistanceFade(x, yA, yB, model, replication);
-        const pair = renderBasePairLine(x, yA, yB, parentalFade, {
+        const parentalVisibility = transitionMode === "instant"
+          ? 1
+          : parentalPairApproachFade(x, model) *
+            basePairForkDistanceFade(x, yA, yB, model, replication);
+        const pair = renderBasePairLine(x, yA, yB, parentalVisibility, {
           firstRole: "a",
           secondRole: "b",
           firstBase: identity.first,
           secondBase: identity.second,
         });
-        if (pair && parentalFade > EPSILON) pairs.push(pair);
+        if (pair && parentalVisibility > EPSILON) pairs.push(pair);
       }
 
       if (state.layers.newDna && newDnaVisibleAt(x, replication, model)) {
         const topNewY = nascentY(x, "top", model);
         const bottomNewY = nascentY(x, "bottom", model);
-        const daughterFade = daughterDetailFade(replication.profile);
-        const daughterOpacity = daughterFade;
-        const topDistanceFade = basePairForkDistanceFade(x, yA, topNewY, model, replication);
-        const bottomDistanceFade = basePairForkDistanceFade(x, yB, bottomNewY, model, replication);
-        const topPair = renderBasePairLine(x, yA, topNewY, daughterOpacity * topDistanceFade, {
+        let topVisibility = 1;
+        let bottomVisibility = 1;
+
+        if (transitionMode !== "instant") {
+          const daughterTransition = transitionMode === "grow"
+            ? newDnaBasePairGrowthAt(x, replication, model)
+            : daughterDetailFade(replication.profile);
+          topVisibility =
+            daughterTransition * basePairForkDistanceFade(x, yA, topNewY, model, replication);
+          bottomVisibility =
+            daughterTransition * basePairForkDistanceFade(x, yB, bottomNewY, model, replication);
+        }
+
+        const topPair = renderBasePairLine(x, yA, topNewY, topVisibility, {
           firstRole: "a",
           secondRole: "top",
           firstBase: identity.first,
           secondBase: identity.second,
         });
-        const bottomPair = renderBasePairLine(x, yB, bottomNewY, daughterOpacity * bottomDistanceFade, {
+        const bottomPair = renderBasePairLine(x, yB, bottomNewY, bottomVisibility, {
           firstRole: "b",
           secondRole: "bottom",
           firstBase: identity.second,
           secondBase: identity.first,
         });
-        if (topPair && topDistanceFade > EPSILON) pairs.push(topPair);
-        if (bottomPair && bottomDistanceFade > EPSILON) pairs.push(bottomPair);
+        if (topPair && topVisibility > EPSILON) pairs.push(topPair);
+        if (bottomPair && bottomVisibility > EPSILON) pairs.push(bottomPair);
       }
     });
 
@@ -2422,12 +2650,10 @@
   }
 
   function renderCuts() {
-    const repair = previewRepairRange();
-    const displayedCuts = repair ? subtractCutRange(state.cuts, repair) : state.cuts.map(cutRange);
-    const cuts = displayedCuts.map((cut, index) => ({
+    const cuts = state.cuts.map((cut, index) => ({
       range: cutRange(cut),
-      index: repair ? "preview" : index,
-      preview: Boolean(repair),
+      index,
+      preview: false,
     }));
     const preview = previewCutRange();
     const cutColor = artworkColour("#b8384b");
@@ -2439,7 +2665,7 @@
     const iconOffset = 16 / Math.max(EPSILON, viewState.zoom * artworkAspectY());
     const iconY = clamp(guideTop - iconOffset, 46, VIEW.height - 46);
 
-    const renderedCuts = cuts
+    return cuts
       .map(({ range, index, preview: isPreview }) => {
         const gapPadding = 9 + state.weight;
         const startX = VIEW.x0 + range.start * VIEW.moleculeWidth;
@@ -2464,7 +2690,7 @@
         const deleteControl = isPreview
           ? ""
           : renderItemDeleteControl(
-              centerX + 27 / Math.max(EPSILON, viewState.zoom * artworkAspectX()),
+              centerX + 27 / Math.max(EPSILON, viewState.zoom * artworkScaleX()),
               iconY,
               "delete-cut",
               `data-cut-index="${index}"`,
@@ -2486,32 +2712,35 @@
         </g>`;
       })
       .join("");
+  }
 
-    if (!repair) return renderedCuts;
-    const repairStartX = VIEW.x0 + repair.start * VIEW.moleculeWidth;
-    const repairEndX = VIEW.x0 + repair.end * VIEW.moleculeWidth;
-    const repairLeftX = Math.min(repairStartX, repairEndX);
-    const repairRightX = Math.max(repairStartX, repairEndX);
-    const repairColor = canvasInkColor();
-    const repairWidth = repairRightX - repairLeftX;
-    const repairGuide = repairWidth > 2
-      ? `<g class="rs-repair-preview rs-ui-only" aria-label="Break repair preview">
-          <rect x="${fixed(repairLeftX)}" y="${fixed(guideTop)}" width="${fixed(
-            repairWidth
-          )}" height="${fixed(guideHeight)}" fill="${repairColor}" opacity="0.055"/>
-          <line x1="${fixed(repairLeftX)}" y1="${fixed(guideTop)}" x2="${fixed(
-            repairLeftX
-          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
-          <line x1="${fixed(repairRightX)}" y1="${fixed(guideTop)}" x2="${fixed(
-            repairRightX
-          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
-        </g>`
-      : `<g class="rs-repair-preview rs-ui-only" aria-label="Break repair preview">
-          <line x1="${fixed(repairLeftX)}" y1="${fixed(guideTop)}" x2="${fixed(
-            repairLeftX
-          )}" y2="${fixed(guideBottom)}" stroke="${repairColor}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
-        </g>`;
-    return `${renderedCuts}${repairGuide}`;
+  function renderUnreplicatePreview() {
+    const range = previewUnreplicateRange();
+    if (!range) return "";
+    const guideBounds = toolGuideBounds();
+    const guideTop = clamp(guideBounds.top, 70, VIEW.height - 70);
+    const guideBottom = clamp(guideBounds.bottom, 70, VIEW.height - 70);
+    const guideHeight = Math.max(1, guideBottom - guideTop);
+    const firstX = VIEW.x0 + range.start * VIEW.moleculeWidth;
+    const secondX = VIEW.x0 + range.end * VIEW.moleculeWidth;
+    const leftX = Math.min(firstX, secondX);
+    const rightX = Math.max(firstX, secondX);
+    const width = rightX - leftX;
+    const color = artworkColour("#b8384b");
+    const lines = width > 2
+      ? `<line x1="${fixed(leftX)}" y1="${fixed(guideTop)}" x2="${fixed(
+          leftX
+        )}" y2="${fixed(guideBottom)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>
+         <line x1="${fixed(rightX)}" y1="${fixed(guideTop)}" x2="${fixed(
+          rightX
+        )}" y2="${fixed(guideBottom)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>`
+      : `<line x1="${fixed(leftX)}" y1="${fixed(guideTop)}" x2="${fixed(
+          leftX
+        )}" y2="${fixed(guideBottom)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 6" opacity="0.72" vector-effect="non-scaling-stroke"/>`;
+    return `<g class="rs-unreplicate-preview rs-ui-only" aria-label="Unreplicate preview">
+      ${width > 2 ? `<rect x="${fixed(leftX)}" y="${fixed(guideTop)}" width="${fixed(width)}" height="${fixed(guideHeight)}" fill="${color}" opacity="0.055"/>` : ""}
+      ${lines}
+    </g>`;
   }
 
   function transformedSvgPoint(x, y, matrix) {
@@ -2577,8 +2806,9 @@
     // A fixed genomic column count keeps the grid independent of base-pair
     // resolution while guaranteeing lines through both ruler endpoints. For
     // odd resolutions, those endpoints are also base-pair lattice sites.
+    const columns = gridColumnCount(state);
     const xStep = transformedSvgPoint(
-      VIEW.x0 + VIEW.moleculeWidth / GRID_COLUMN_COUNT,
+      VIEW.x0 + VIEW.moleculeWidth / columns,
       VIEW.centerY,
       matrix
     );
@@ -2635,7 +2865,7 @@
     if (actionName === "add") {
       return `<path d="M-5 0H5M0-5V5" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>`;
     }
-    if (actionName === "repair") {
+    if (actionName === "unreplicate") {
       return `<text x="0" y="5" fill="${color}" font-family="Inter, Segoe UI Symbol, sans-serif" font-size="17" font-weight="700" text-anchor="middle">&#8634;</text>`;
     }
     return `<text x="0" y="5" fill="${color}" font-family="Inter, Segoe UI Symbol, sans-serif" font-size="16" font-weight="700" text-anchor="middle">&#9986;</text>`;
@@ -2753,7 +2983,8 @@
     const elapsed = Math.max(0, Number(elapsedMilliseconds) || 0);
     const speed = playbackSpeed(sourceState);
     const bounds = forkTravelBounds(sourceState);
-    const travelIncrement = elapsed * FORK_TRAVEL_PER_MILLISECOND * speed;
+    const travelIncrement =
+      elapsed * FORK_TRAVEL_PER_MILLISECOND * speed * genomeDistanceScale(sourceState);
     if (discreteAnimationEnabled(sourceState)) {
       const step = basePairStepFraction(sourceState);
       let clock = forkPlaybackClocks.get(sourceState);
@@ -2786,6 +3017,7 @@
   }
 
   function render() {
+    syncViewGeometry(state);
     let model = getReplicationModel();
     if (synchroniseOriginPositions()) model = getReplicationModel();
     synchroniseSPhaseFromGeometry(model);
@@ -2819,6 +3051,7 @@
           <g class="rs-ui-only" aria-label="Replication origins">${renderOrigins(model)}</g>
           ${renderForks(model)}
           <g aria-label="DNA breaks">${renderCuts()}</g>
+          ${renderUnreplicatePreview()}
           ${renderContextAction()}
         </g>
       </g>
@@ -2887,6 +3120,7 @@
     const doubleStrandDetails = modelSupportsDoubleStrandDetails();
     const pairMode = basePairColorMode();
     if (elements.modelControl) elements.modelControl.value = modelName;
+    if (elements.lengthModeControl) elements.lengthModeControl.value = lengthMode();
     elements.lengthControl.max = maximumLengthForBasePairCount(state);
     elements.lengthControl.value = state.length;
     elements.progressControl.value = state.progress;
@@ -2972,11 +3206,14 @@
   }
 
   function screenToWorld(point) {
-    const scaleX = viewState.zoom * artworkAspectX();
-    const scaleY = viewState.zoom * artworkAspectY();
+    const transform = artworkTransformComponents();
+    const aspectX = VIEW.width / 2 +
+      (point.x - VIEW.width / 2 - viewState.panX) / Math.max(EPSILON, viewState.zoom);
+    const aspectY = VIEW.centerY +
+      (point.y - VIEW.centerY - viewState.panY) / Math.max(EPSILON, viewState.zoom);
     return {
-      x: VIEW.width / 2 + (point.x - VIEW.width / 2 - viewState.panX) / scaleX,
-      y: VIEW.centerY + (point.y - VIEW.centerY - viewState.panY) / scaleY,
+      x: (aspectX - transform.translateX) / Math.max(EPSILON, transform.scaleX),
+      y: (aspectY - transform.translateY) / Math.max(EPSILON, transform.scaleY),
     };
   }
 
@@ -3023,14 +3260,15 @@
       point.y <= 500 &&
       Math.abs(point.y - VIEW.centerY) <= halfHeight;
     const directControl = ["origin", "fork", "delete-origin", "delete-cut"].includes(hoverState.role);
+    const unreplicateBlocked = ["fork", "delete-origin", "delete-cut"].includes(hoverState.role);
     const ordinaryAction = canvasActionAtPoint(point, hoverState.role);
-    const repairAvailable =
+    const unreplicateAvailable =
       modifierState.special &&
-      withinChromosome &&
-      !directControl &&
-      (withinEditingBand || hoverState.role === "cut");
-    const actionName = repairAvailable
-      ? "repair"
+      withinEditingBand &&
+      !unreplicateBlocked &&
+      Boolean(replicationAt(point.x, getReplicationModel()).region);
+    const actionName = unreplicateAvailable
+      ? "unreplicate"
       : modifierState.special
         ? null
         : modifierState.shift && (withinEditingBand || hoverState.role === "cut")
@@ -3053,12 +3291,12 @@
     // frame while the replacement SVG fragment is installed.
     hideContextAction();
 
-    const color = ["cut", "repair"].includes(actionName) ? artworkColour("#b8384b") : canvasInkColor();
+    const color = ["cut", "unreplicate"].includes(actionName) ? artworkColour("#b8384b") : canvasInkColor();
     const labels = {
       add: "Add origin",
       split: "Split bubble",
       cut: "Break region",
-      repair: "Repair break region",
+      unreplicate: "Unreplicate region",
     };
     const line = action.querySelector("line");
     const symbolGroup = action.querySelector("#rs-context-symbol");
@@ -3101,12 +3339,12 @@
 
   function setZoom(zoom, focus = { x: VIEW.width / 2, y: VIEW.centerY }) {
     const nextZoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
-    const aspectX = artworkAspectX();
-    const aspectY = artworkAspectY();
-    const worldX = VIEW.width / 2 + (focus.x - VIEW.width / 2 - viewState.panX) / (viewState.zoom * aspectX);
-    const worldY = VIEW.centerY + (focus.y - VIEW.centerY - viewState.panY) / (viewState.zoom * aspectY);
-    viewState.panX = focus.x - VIEW.width / 2 - (worldX - VIEW.width / 2) * nextZoom * aspectX;
-    viewState.panY = focus.y - VIEW.centerY - (worldY - VIEW.centerY) * nextZoom * aspectY;
+    const worldPoint = screenToWorld(focus);
+    const aspectPoint = transformedArtworkPoint(worldPoint.x, worldPoint.y);
+    viewState.panX =
+      focus.x - VIEW.width / 2 - (aspectPoint.x - VIEW.width / 2) * nextZoom;
+    viewState.panY =
+      focus.y - VIEW.centerY - (aspectPoint.y - VIEW.centerY) * nextZoom;
     viewState.zoom = nextZoom;
     render();
   }
@@ -3146,7 +3384,7 @@
 
   function forksShouldCollapse(side, desiredPosition, oppositePosition) {
     const screenDistance =
-      Math.abs(desiredPosition - oppositePosition) * VIEW.moleculeWidth * viewState.zoom * artworkAspectX();
+      Math.abs(desiredPosition - oppositePosition) * VIEW.moleculeWidth * viewState.zoom * artworkScaleX();
     const crossedPartner = side === "left" ? desiredPosition >= oppositePosition : desiredPosition <= oppositePosition;
     return crossedPartner || screenDistance <= FORK_COLLAPSE_PX;
   }
@@ -3190,33 +3428,129 @@
     render();
   }
 
-  function commitRepairRange(start, end, startSnapshot) {
-    const range = cutInteractionRange(start, end);
-    const nextCuts = subtractCutRange(state.cuts, range);
-    if (JSON.stringify(nextCuts) === JSON.stringify(state.cuts.map(cutRange))) {
-      render();
-      setStatus("No break lies within that region");
-      return;
+  function unreplicateInteractionRange(start, end, sourceState = state) {
+    let range = cutInteractionRange(start, end, sourceState);
+    const pairStep = basePairStepFraction(sourceState);
+    const minimumSpan = snapEditingEnabled(sourceState)
+      ? splitBubbleGapSteps(sourceState) * pairStep
+      : splitBubbleClearancePx(sourceState) / VIEW.moleculeWidth;
+    if (range.end - range.start >= minimumSpan - EPSILON) return range;
+
+    const targetCenter = (range.start + range.end) / 2;
+    if (snapEditingEnabled(sourceState)) {
+      const gapSteps = splitBubbleGapSteps(sourceState);
+      const halfSpan = (gapSteps * pairStep) / 2;
+      const center = splitCompatibleCenterFraction(targetCenter, gapSteps, sourceState, {
+        min: halfSpan,
+        max: 1 - halfSpan,
+      });
+      if (center !== null) {
+        return { start: center - halfSpan, end: center + halfSpan };
+      }
     }
-    pushSnapshot(startSnapshot);
-    state.cuts = nextCuts;
-    const startBp = genomicPositionAtFraction(range.start);
-    const endBp = genomicPositionAtFraction(range.end);
-    render();
-    setStatus(`Breaks repaired from ${startBp}\u2013${endBp} bp`);
+
+    let startPosition = targetCenter - minimumSpan / 2;
+    let endPosition = targetCenter + minimumSpan / 2;
+    if (startPosition < 0) {
+      endPosition -= startPosition;
+      startPosition = 0;
+    }
+    if (endPosition > 1) {
+      startPosition -= endPosition - 1;
+      endPosition = 1;
+    }
+    return cutRange({ start: startPosition, end: endPosition });
   }
 
-  function repairBreakAtFraction(fraction, indexHint = -1) {
-    const hintedIndex = Number(indexHint);
-    const cutIndex = Number.isInteger(hintedIndex) && hintedIndex >= 0
-      ? hintedIndex
-      : cutIndexAtFraction(fraction, state, 18);
-    if (cutIndex < 0 || cutIndex >= state.cuts.length) {
+  function unreplicateRangePlan(start, end, sourceState = state) {
+    const range = unreplicateInteractionRange(start, end, sourceState);
+    const model = getReplicationModelAtTravel(sourceState.forkTravel, sourceState);
+    const affectedRegions = model.regions.filter(
+      (region) => Math.min(region.end, range.end) - Math.max(region.start, range.start) > EPSILON
+    );
+    const removedOriginIds = new Set();
+    const remainingSegments = [];
+    const removedFraction = affectedRegions.reduce(
+      (total, region) =>
+        total + Math.max(0, Math.min(region.end, range.end) - Math.max(region.start, range.start)),
+      0
+    );
+
+    affectedRegions.forEach((region) => {
+      region.originIds.forEach((originId) => removedOriginIds.add(originId));
+      if (range.start > region.start + EPSILON) {
+        remainingSegments.push({
+          start: region.start,
+          end: Math.min(region.end, range.start),
+        });
+      }
+      if (range.end < region.end - EPSILON) {
+        remainingSegments.push({
+          start: Math.max(region.start, range.end),
+          end: region.end,
+        });
+      }
+    });
+
+    return {
+      range,
+      affectedRegions,
+      removedOriginIds: [...removedOriginIds],
+      removedFraction,
+      remainingSegments: remainingSegments.filter(
+        (segment) => segment.end - segment.start > EPSILON
+      ),
+    };
+  }
+
+  function applyUnreplicateRange(start, end, sourceState = state) {
+    const plan = unreplicateRangePlan(start, end, sourceState);
+    if (!plan.affectedRegions.length) return { ...plan, changed: false, replacements: [] };
+
+    const removedOriginIds = new Set(plan.removedOriginIds);
+    sourceState.origins = sourceState.origins.filter(
+      (origin) => !removedOriginIds.has(origin.id)
+    );
+    const replacements = plan.remainingSegments.map((segment) =>
+      bubbleFromBounds(segment.start, segment.end, sourceState)
+    );
+    sourceState.origins.push(...replacements);
+    sourceState.origins.sort((first, second) => first.startPosition - second.startPosition);
+    sourceState.selectedOriginId = null;
+    sourceState.selectedFork = null;
+    if (!sourceState.origins.length) {
+      sourceState.forkTravel = 0;
+      sourceState.progress = 0;
+    }
+    synchroniseOriginPositions(sourceState);
+    resetForkPlaybackClock(sourceState);
+    synchroniseSPhaseFromGeometry(
+      getReplicationModelAtTravel(sourceState.forkTravel, sourceState),
+      sourceState
+    );
+    return { ...plan, changed: true, replacements };
+  }
+
+  function unreplicateRange(start, end, sourceState = state) {
+    return applyUnreplicateRange(start, end, sourceState);
+  }
+
+  function commitUnreplicateRange(start, end, startSnapshot) {
+    const plan = unreplicateRangePlan(start, end, state);
+    if (!plan.affectedRegions.length) {
       render();
-      setStatus("No break at that position");
+      setStatus("No replicated DNA lies within that region");
       return false;
     }
-    deleteCutByIndex(cutIndex);
+
+    pushSnapshot(startSnapshot);
+    stopAnimation();
+    const result = applyUnreplicateRange(start, end, state);
+    syncControls();
+    render();
+    const startBp = genomicPositionAtFraction(result.range.start);
+    const endBp = genomicPositionAtFraction(result.range.end);
+    setStatus(`DNA returned to unreplicated from ${startBp}–${endBp} bp`);
     return true;
   }
 
@@ -3411,7 +3745,7 @@
 
   function forkReachedChromosomeEnd(desiredPosition, completionBoundary) {
     const screenDistance =
-      Math.abs(desiredPosition - completionBoundary) * VIEW.moleculeWidth * viewState.zoom * artworkAspectX();
+      Math.abs(desiredPosition - completionBoundary) * VIEW.moleculeWidth * viewState.zoom * artworkScaleX();
     const crossedBoundary = completionBoundary <= EPSILON
       ? desiredPosition <= completionBoundary
       : desiredPosition >= completionBoundary;
@@ -3456,7 +3790,7 @@
       }
 
       const forkGapPx =
-        halfWidth * 2 * VIEW.moleculeWidth * viewState.zoom * artworkAspectX(sourceState);
+        halfWidth * 2 * VIEW.moleculeWidth * viewState.zoom * artworkScaleX(sourceState);
       collapsePending = rawHalfWidth <= 0 || forkGapPx <= FORK_COLLAPSE_PX;
       if (collapsePending) halfWidth = 0;
 
@@ -3778,14 +4112,14 @@
     event.preventDefault();
   }
 
-  function beginRepairRange(event, x, cutIndex = -1) {
+  function beginUnreplicateRange(event, x) {
     const position = cutInteractionFraction(normalisedX(x));
+    stopAnimation();
     dragState = {
       pointerId: event.pointerId,
-      role: "repair-range",
+      role: "unreplicate-range",
       anchor: position,
       current: position,
-      cutIndex,
       startClientX: event.clientX,
       startClientY: event.clientY,
       startSnapshot: snapshot(),
@@ -3793,7 +4127,7 @@
     };
     hideContextAction();
     elements.canvas.setPointerCapture(event.pointerId);
-    elements.canvas.classList.add("is-repairing");
+    elements.canvas.classList.add("is-unreplicating");
     event.preventDefault();
   }
 
@@ -3838,16 +4172,17 @@
     const halfHeight = interactionHalfHeight();
     const specialControl = event.ctrlKey || event.metaKey;
 
-    if (specialControl && role !== "fork" && role !== "origin") {
-      const repairAvailable =
+    if (specialControl && role !== "fork") {
+      const unreplicateAvailable =
         point.x >= VIEW.x0 &&
         point.x <= VIEW.x1 &&
-        (role === "cut" || Math.abs(point.y - VIEW.centerY) <= halfHeight);
-      if (!repairAvailable) return;
-      const cutIndex = role === "cut"
-        ? Number(target.dataset.cutIndex)
-        : cutIndexAtFraction(normalisedX(point.x), state, 18);
-      beginRepairRange(event, point.x, cutIndex);
+        Math.abs(point.y - VIEW.centerY) <= halfHeight &&
+        Boolean(replicationAt(point.x, getReplicationModel()).region);
+      if (!unreplicateAvailable) {
+        setStatus("Start on replicated DNA to unreplicate a region");
+        return;
+      }
+      beginUnreplicateRange(event, point.x);
       return;
     }
 
@@ -3862,7 +4197,7 @@
     }
 
     if (role === "cut") {
-      setStatus("Hold Ctrl to repair a break region");
+      setStatus("Use the red delete control to remove this break");
       return;
     }
 
@@ -3949,7 +4284,7 @@
       event.preventDefault();
       return;
     }
-    if (dragState.role === "repair-range") {
+    if (dragState.role === "unreplicate-range") {
       const point = screenToWorld(screenPoint);
       dragState.current = cutInteractionFraction(normalisedX(point.x));
       const distance = Math.hypot(
@@ -4027,7 +4362,7 @@
     elements.canvas.classList.remove("is-dragging");
     elements.canvas.classList.remove("is-panning");
     elements.canvas.classList.remove("is-cutting");
-    elements.canvas.classList.remove("is-repairing");
+    elements.canvas.classList.remove("is-unreplicating");
     dragState = null;
 
     if (completedDrag.role === "cut-range") {
@@ -4044,15 +4379,20 @@
       return;
     }
 
-    if (completedDrag.role === "repair-range") {
+    if (completedDrag.role === "unreplicate-range") {
       if (event.type === "pointercancel") {
         render();
         clearPointerHover();
       } else if (completedDrag.moved) {
-        commitRepairRange(completedDrag.anchor, completedDrag.current, completedDrag.startSnapshot);
+        commitUnreplicateRange(
+          completedDrag.anchor,
+          completedDrag.current,
+          completedDrag.startSnapshot
+        );
         rememberPointer(event);
       } else {
-        repairBreakAtFraction(completedDrag.current, completedDrag.cutIndex);
+        render();
+        setStatus("Drag across replicated DNA to unreplicate a region");
         rememberPointer(event);
       }
       return;
@@ -4169,6 +4509,14 @@
     updatePlayButton();
     setStatus("Forks running");
     animationFrame = requestAnimationFrame(animateForks);
+  }
+
+  function isPlaybackSpaceShortcut(event) {
+    if (!event || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (event.code !== "Space" && event.key !== " ") return false;
+    const target = event.target || document.activeElement;
+    if (target?.isContentEditable) return false;
+    return !["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(target?.tagName);
   }
 
   function cleanSvgElement() {
@@ -4412,11 +4760,13 @@
     const liveDragState = dragState;
     state = videoState;
     dragState = null;
+    syncViewGeometry(videoState);
     try {
       return callback();
     } finally {
       state = liveState;
       dragState = liveDragState;
+      syncViewGeometry(liveState);
     }
   }
 
@@ -4424,17 +4774,21 @@
     return withVideoRenderState(videoState, () => {
       const model = getReplicationModelAtTravel(forkTravel, videoState);
       const maxStroke = Math.max(videoState.weight, videoState.basePairWidth);
-      const aspectX = artworkAspectX(videoState);
-      const aspectY = artworkAspectY(videoState);
       const contentHalfExtent = Math.max(
         80,
         videoState.daughterSpacing / 2 + doubleStrandHalfHeight(videoState) + maxStroke
       );
-      const halfExtent = contentHalfExtent * aspectY + EXPORT_PADDING;
-      const width = VIEW.moleculeWidth * aspectX + EXPORT_PADDING * 2;
-      const height = halfExtent * 2;
-      const x = VIEW.width / 2 - width / 2;
-      const y = VIEW.centerY - halfExtent;
+      const transform = artworkTransformComponents(videoState);
+      const transformedLeft = transform.scaleX * VIEW.x0 + transform.translateX;
+      const transformedRight = transform.scaleX * VIEW.x1 + transform.translateX;
+      const transformedTop =
+        transform.scaleY * (VIEW.centerY - contentHalfExtent) + transform.translateY;
+      const transformedBottom =
+        transform.scaleY * (VIEW.centerY + contentHalfExtent) + transform.translateY;
+      const x = Math.min(transformedLeft, transformedRight) - EXPORT_PADDING;
+      const y = Math.min(transformedTop, transformedBottom) - EXPORT_PADDING;
+      const width = Math.abs(transformedRight - transformedLeft) + EXPORT_PADDING * 2;
+      const height = Math.abs(transformedBottom - transformedTop) + EXPORT_PADDING * 2;
       const videoArtwork = withArtworkStrokeScale(1, () => artworkMarkup(model));
       const source = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}" width="${fixed(
@@ -4572,7 +4926,11 @@
     const speed = playbackSpeed(videoState);
     const startTravel = forkTravelBounds(videoState).zero;
     const completionTravel = forkCompletionTravel(videoState);
-    const travelPerFrame = FORK_TRAVEL_PER_MILLISECOND * (1000 / VIDEO_FRAME_RATE) * speed;
+    const travelPerFrame =
+      FORK_TRAVEL_PER_MILLISECOND *
+      (1000 / VIDEO_FRAME_RATE) *
+      speed *
+      genomeDistanceScale(videoState);
     const travelSpan = Math.max(0, completionTravel - startTravel);
     return {
       startTravel,
@@ -5030,10 +5388,25 @@
     bindContinuousControl(elements.lengthControl, (value) => {
       const nextLength = boundedLengthValue(value, state);
       if (Math.abs(nextLength - state.length) > EPSILON) reseedBasePairSequence(state);
-      state.length = nextLength;
-      resetForkPlaybackClock();
+      resizeGenomeLength(nextLength, state);
       render();
     });
+    if (elements.lengthModeControl) {
+      elements.lengthModeControl.addEventListener("change", () => {
+        pushSnapshot();
+        state.advanced.lengthMode = LENGTH_MODES.has(elements.lengthModeControl.value)
+          ? elements.lengthModeControl.value
+          : DEFAULTS.advanced.lengthMode;
+        syncViewGeometry(state);
+        syncControls();
+        render();
+        setStatus(
+          lengthMode() === "extend"
+            ? "Genome length will extend to the right"
+            : "Genome length will change the bar scale"
+        );
+      });
+    }
     bindContinuousControl(elements.progressControl, (value) => {
       stopAnimation();
       setSPhaseTime(boundedControlValue("progress", value));
@@ -5042,8 +5415,14 @@
     bindContinuousControl(elements.pairResolutionControl, (value) => {
       const nextResolution = basePairResolution({ pairResolution: value });
       if (nextResolution !== state.pairResolution) reseedBasePairSequence(state);
+      const previousLength = state.length;
       state.pairResolution = nextResolution;
-      state.length = boundedLengthValue(state.length, state);
+      const nextLength = boundedLengthValue(previousLength, state);
+      if (Math.abs(nextLength - previousLength) > EPSILON) {
+        resizeGenomeLength(nextLength, state);
+      } else {
+        syncViewGeometry(state);
+      }
       resetForkPlaybackClock();
       syncControls();
       render();
@@ -5268,6 +5647,11 @@
         modifierState.special = true;
         refreshContextAction();
       }
+      if (isPlaybackSpaceShortcut(event)) {
+        event.preventDefault();
+        toggleAnimation();
+        return;
+      }
       if (modifier && ((key === "z" && event.shiftKey) || key === "y")) {
         event.preventDefault();
         redo();
@@ -5353,6 +5737,7 @@
       "selectionMessage",
       "modelControl",
       "lengthControl",
+      "lengthModeControl",
       "progressControl",
       "pairResolutionControl",
       "basePairWidthControl",

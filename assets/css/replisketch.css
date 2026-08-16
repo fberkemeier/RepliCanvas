@@ -479,6 +479,10 @@ svg:focus-visible {
   margin-bottom: 10px;
 }
 
+.rs-length-mode-control {
+  margin-top: 9px;
+}
+
 .rs-section-heading {
   display: flex;
   min-height: 22px;
@@ -1328,8 +1332,8 @@ input[type="range"] {
 
 #dnaCanvas[data-context-action="cut"],
 #dnaCanvas[data-context-action="cut"] *,
-#dnaCanvas[data-context-action="repair"],
-#dnaCanvas[data-context-action="repair"] * {
+#dnaCanvas[data-context-action="unreplicate"],
+#dnaCanvas[data-context-action="unreplicate"] * {
   cursor: crosshair;
 }
 
@@ -1345,8 +1349,8 @@ input[type="range"] {
 
 #dnaCanvas.is-cutting,
 #dnaCanvas.is-cutting *,
-#dnaCanvas.is-repairing,
-#dnaCanvas.is-repairing * {
+#dnaCanvas.is-unreplicating,
+#dnaCanvas.is-unreplicating * {
   cursor: crosshair;
 }
 
@@ -1410,13 +1414,13 @@ input[type="range"] {
 
 .rs-context-action[data-action="cut"] line,
 .rs-context-action[data-action="cut"] circle,
-.rs-context-action[data-action="repair"] line,
-.rs-context-action[data-action="repair"] circle {
+.rs-context-action[data-action="unreplicate"] line,
+.rs-context-action[data-action="unreplicate"] circle {
   stroke: var(--rs-danger);
 }
 
 .rs-context-action[data-action="cut"] text,
-.rs-context-action[data-action="repair"] text {
+.rs-context-action[data-action="unreplicate"] text {
   fill: var(--rs-danger);
 }
 
@@ -2605,7 +2609,7 @@ html[data-theme="dark"] .rs-aspect-symbol {
   }
 }
 
-/* Repair selection is a transient canvas guide and must never intercept edits. */
-.rs-repair-preview {
+/* Unreplicate selection is a transient canvas guide and must never intercept edits. */
+.rs-unreplicate-preview {
   pointer-events: none;
 }

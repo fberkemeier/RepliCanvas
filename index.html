@@ -177,7 +177,7 @@
                 <span>Drag fork</span>
               </div>
               <div><kbd>Shift</kbd><span>Break region</span></div>
-              <div><kbd>Ctrl</kbd><span>Special controls</span></div>
+              <div><kbd>Ctrl</kbd><span>Unreplicate</span></div>
             </div>
 
             <div class="rs-inline-actions">
@@ -206,6 +206,14 @@
                 <output id="lengthOutput" for="lengthControl">40 bp</output>
               </label>
               <input id="lengthControl" type="range" min="10" max="625" step="5" value="50" />
+            </div>
+
+            <div class="rs-select-control rs-compact-select rs-length-mode-control">
+              <label for="lengthModeControl">When length changes</label>
+              <select id="lengthModeControl">
+                <option value="scale" selected>Change bar scale</option>
+                <option value="extend">Extend to the right</option>
+              </select>
             </div>
 
             <div class="rs-range-control">
@@ -338,18 +346,19 @@
                   <input id="snapToBasePairsToggle" type="checkbox" />
                   <span class="rs-toggle-track" aria-hidden="true"></span>
                 </label>
-                <div class="rs-select-control rs-compact-select rs-options-select">
-                  <label for="basePairTransitionControl">Base-pair animation</label>
-                  <select id="basePairTransitionControl">
-                    <option value="fade" selected>Fade at forks</option>
-                    <option value="grow">Grow to midpoint</option>
-                  </select>
-                </div>
                 <label class="rs-toggle" for="includeExportBackgroundToggle">
                   <span>Include background in exports</span>
                   <input id="includeExportBackgroundToggle" type="checkbox" />
                   <span class="rs-toggle-track" aria-hidden="true"></span>
                 </label>
+                <div class="rs-select-control rs-compact-select rs-options-select">
+                  <label for="basePairTransitionControl">Base-pair animation</label>
+                  <select id="basePairTransitionControl">
+                    <option value="fade" selected>Fade at forks</option>
+                    <option value="grow">Grow to midpoint</option>
+                    <option value="instant">Instant</option>
+                  </select>
+                </div>
                 <div class="rs-range-control rs-options-range">
                   <label for="newDnaStartDistanceControl">
                     <span>New-DNA fork distance</span>

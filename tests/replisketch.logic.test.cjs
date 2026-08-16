@@ -24,6 +24,10 @@ const testApi = `
     artworkAspectTransform,
     artworkAspectX,
     artworkAspectY,
+    artworkScaleX,
+    artworkTransformComponents,
+    transformedArtworkPoint,
+    adaptivePathSampleStep,
     aspectFactorFromSlider,
     aspectSliderValue,
     artworkMarkup,
@@ -79,12 +83,17 @@ const testApi = `
     getReplicationModel,
     getReplicationModelAtTravel,
     genomicPositionAtFraction,
+    genomeDistanceScale,
+    gridColumnCount,
     helixWave,
     insetBasePairSegment,
     invertHexColour,
     interactionHalfHeight,
     isCutGap,
+    isPlaybackSpaceShortcut,
     latticeSpanFraction,
+    lengthMode,
+    moleculeWidthForState,
     makeVideoExportState,
     maximumLengthForBasePairCount,
     makeDefaultState,
@@ -96,6 +105,7 @@ const testApi = `
     nascentSpan,
     newDnaDistanceInset,
     newDnaStartDistance,
+    newDnaBasePairGrowthAt,
     newDnaVisibleAt,
     nascentY,
     niceIntegerCeiling,
@@ -125,6 +135,7 @@ const testApi = `
     renderBasePairs,
     renderNascentDna,
     reseedBasePairSequence,
+    resizeGenomeLength,
     reseedNextOriginId,
     remuxWebmToMp4,
     rulerBasePairPosition,
@@ -141,13 +152,14 @@ const testApi = `
     setElements(value) { Object.assign(elements, value); },
     setSPhaseTime,
     selectedForkDescriptor,
-    setState(value) { state = value; },
+    setState(value) { state = value; syncViewGeometry(state); },
     setThemeMode(value) { themeMode = value; },
     setVideoExportBusy,
     setViewState(value) { viewState = value; },
     shouldMergeCompletedBubbleDrag,
     smoothRunPath,
     snapEditingEnabled,
+    syncViewGeometry,
     snapForkTravel,
     snapFractionToBasePair,
     subtractCutRange,
@@ -170,6 +182,7 @@ const testApi = `
     transitionProfile,
     transitionTightness,
     transitionTightnessLabel,
+    unreplicateRange,
     updateCanvasLegend,
     regionEdgeTransitionWidth,
     regionTransitionWidth,
@@ -1407,7 +1420,7 @@ test("artwork aspect is persistent, pointer-correct, and shared by preview and v
 
   assert.equal(api.artworkAspectX(), 1.5);
   assert.equal(api.artworkAspectY(), 0.75);
-  assert.match(api.artworkAspectTransform(), /scale\(1\.5000 0\.7500\)/);
+  assert.match(api.artworkAspectTransform(), /matrix\(1\.5000 0 0 0\.7500 -300\.0000 77\.5000\)/);
   assert.match(api.fixedUiTransform(100, 200), /scale\(0\.3333 0\.6667\)$/);
 
   const worldPoint = { x: 500, y: 280 };
@@ -1427,7 +1440,7 @@ test("artwork aspect is persistent, pointer-correct, and shared by preview and v
 
   const video = api.fixedVideoSvgSource(state, state.forkTravel);
   assert.equal(video.width, api.VIEW.moleculeWidth * 1.5 + 24);
-  assert.match(video.source, /transform="translate\(600\.0 310\.0\) scale\(1\.5000 0\.7500\)/);
+  assert.match(video.source, /transform="matrix\(1\.5000 0 0 0\.7500 -300\.0000 77\.5000\)"/);
   assert.match(source, /id="rs-artwork-aspect" transform="\$\{artworkAspectTransform\(\)\}"/);
   assert.match(source, /querySelector\("#rs-artwork-aspect"\)\?\.getScreenCTM\(\)/);
 
@@ -3532,7 +3545,7 @@ test("the fixed preview grid spans both genomic endpoints independently of base-
   assert.equal(api.GRID_COLUMN_COUNT, 12);
   const gridStep = api.VIEW.moleculeWidth / api.GRID_COLUMN_COUNT;
   assert.equal(api.VIEW.x0 + gridStep * api.GRID_COLUMN_COUNT, api.VIEW.x1);
-  assert.match(source, /VIEW\.x0 \+ VIEW\.moleculeWidth \/ GRID_COLUMN_COUNT/);
+  assert.match(source, /VIEW\.x0 \+ VIEW\.moleculeWidth \/ columns/);
   assert.match(source, /const anchor = transformedSvgPoint\(VIEW\.x0/);
   assert.doesNotMatch(source, /--rs-grid-x[^\n]*basePairResolution/);
 });
@@ -3551,7 +3564,7 @@ test("playback, menu, aspect, and control-guide layout matches the refined inter
   assert.ok(guide.indexOf("Drag bubble") < guide.indexOf("Shift"));
   assert.ok(guide.indexOf("Drag fork") < guide.indexOf("Shift"));
   assert.match(guide, /Break region/);
-  assert.match(guide, /Special controls/);
+  assert.match(guide, /Unreplicate/);
   assert.doesNotMatch(guide, /Wheel zoom|Cut \/ drag region/);
 
   const guideSvgs = [...guide.matchAll(/<svg[\s\S]*?<\/svg>/g)].map((match) => match[0]);
@@ -3742,8 +3755,83 @@ test("base-pair transition mode supports opaque growth from both strands to the 
     secondBase: "T",
   });
   assert.match(faded, /opacity="0\.4000"/);
-  assert.match(html, /id="basePairTransitionControl"[\s\S]*?<option value="fade" selected>Fade at forks<\/option>[\s\S]*?<option value="grow">Grow to midpoint<\/option>/);
+
+  state.advanced.basePairTransition = "instant";
+  const instant = api.renderBasePairLine(100, 20, 60, 0.05, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(instant, /data-transition="instant"/);
+  assert.match(instant, /opacity="1\.0000"/);
+  assert.match(instant, /y2="40\.0000"[^>]*data-half="first"/);
+  assert.match(instant, /y1="40\.0000"[^>]*data-half="second"/);
+
+  assert.match(
+    html,
+    /id="basePairTransitionControl"[\s\S]*?<option value="fade" selected>Fade at forks<\/option>[\s\S]*?<option value="grow">Grow to midpoint<\/option>[\s\S]*?<option value="instant">Instant<\/option>/
+  );
+  assert.ok(
+    html.indexOf('id="includeExportBackgroundToggle"') <
+      html.indexOf('id="basePairTransitionControl"'),
+    "export-background switch should remain grouped with the other switches"
+  );
   assert.doesNotMatch(html, /id="growBasePairsToggle"/);
+});
+
+test("base-pair growth starts at the configured New-DNA fork distance", () => {
+  const state = freshState();
+  state.origins = [
+    {
+      id: "growth-distance",
+      position: 0.5,
+      startPosition: 0.5,
+      leftOffset: 0.2,
+      rightOffset: 0.2,
+    },
+  ];
+  state.forkTravel = 0.1;
+  state.advanced.basePairTransition = "grow";
+  state.advanced.newDnaStartDistance = 0;
+  api.setState(state);
+
+  let model = api.getReplicationModelAtTravel(state.forkTravel, state);
+  let region = model.regions[0];
+  const initialSpan = api.nascentSpan(region, model, state);
+  const pairSpacing = api.VIEW.moleculeWidth / api.basePairLattice(state).subdivisionCount;
+  const initiallyGrowingX = initialSpan.fromX + pairSpacing;
+  const initialReplication = api.replicationAt(initiallyGrowingX, model);
+  assert.ok(api.newDnaBasePairGrowthAt(initiallyGrowingX, initialReplication, model, state) > 0);
+
+  state.advanced.newDnaStartDistance = 6;
+  model = api.getReplicationModelAtTravel(state.forkTravel, state);
+  region = model.regions[0];
+  const shiftedSpan = api.nascentSpan(region, model, state);
+  assert.ok(shiftedSpan.fromX > initialSpan.fromX + pairSpacing * 4);
+  assert.equal(
+    api.newDnaBasePairGrowthAt(
+      initiallyGrowingX,
+      api.replicationAt(initiallyGrowingX, model),
+      model,
+      state
+    ),
+    0
+  );
+  const shiftedStartReplication = api.replicationAt(shiftedSpan.fromX, model);
+  assert.equal(
+    api.newDnaBasePairGrowthAt(shiftedSpan.fromX, shiftedStartReplication, model, state),
+    0
+  );
+  const fullyGrownX = shiftedSpan.fromX + pairSpacing * 2;
+  assert.ok(
+    api.newDnaBasePairGrowthAt(
+      fullyGrownX,
+      api.replicationAt(fullyGrownX, model),
+      model,
+      state
+    ) > 0.99
+  );
 });
 
 test("the displayed speed multiplier maps the historical 2.75 pace to one times", () => {
@@ -3792,27 +3880,57 @@ test("Ctrl fork dragging moves the two active forks symmetrically around a fixed
   assert.match(source, /Both forks adjusted symmetrically/);
 });
 
-test("Ctrl repair gestures subtract any selected interval from one or more break regions", () => {
-  const repaired = api.subtractCutRange(
-    [
-      { start: 0.1, end: 0.4 },
-      { start: 0.6, end: 0.8 },
-    ],
-    { start: 0.2, end: 0.7 }
-  );
+test("Ctrl drag converts only the selected replicated interval back to unreplicated DNA", () => {
+  const state = freshState();
+  state.advanced.snapToBasePairs = false;
+  state.forkTravel = 0.1;
+  state.origins = [
+    {
+      id: "unreplicate-source",
+      position: 0.5,
+      startPosition: 0.5,
+      leftOffset: 0.3,
+      rightOffset: 0.3,
+    },
+  ];
+  state.selectedOriginId = "unreplicate-source";
+  state.selectedFork = null;
+  api.setState(state);
+
+  const before = api.getReplicationModelAtTravel(state.forkTravel, state);
   assert.deepEqual(
-    JSON.parse(JSON.stringify(repaired)).map(({ start, end }) => [start, end]),
+    JSON.parse(JSON.stringify(
+      before.regions.map(({ start, end }) => [Number(start.toFixed(6)), Number(end.toFixed(6))])
+    )),
+    [[0.1, 0.9]]
+  );
+
+  const result = api.unreplicateRange(0.4, 0.6, state);
+  assert.equal(result.changed, true);
+  assert.ok(Math.abs(result.range.start - 0.4) < 1e-10);
+  assert.ok(Math.abs(result.range.end - 0.6) < 1e-10);
+  assert.equal(result.affectedRegions.length, 1);
+  const after = api.getReplicationModelAtTravel(state.forkTravel, state);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(
+      after.regions.map(({ start, end }) => [Number(start.toFixed(6)), Number(end.toFixed(6))])
+    )),
     [
-      [0.1, 0.2],
-      [0.7, 0.8],
+      [0.1, 0.4],
+      [0.6, 0.9],
     ]
   );
-  assert.match(source, /function beginRepairRange\(event, x, cutIndex = -1\)/);
-  assert.match(source, /specialControl && role !== "fork" && role !== "origin"/);
-  assert.match(source, /beginRepairRange\(event, point\.x, cutIndex\)/);
-  assert.match(source, /commitRepairRange\(completedDrag\.anchor, completedDrag\.current/);
+  assert.equal(state.origins.length, 2);
+  assert.equal(state.selectedOriginId, null);
+  assert.equal(state.selectedFork, null);
+
+  assert.match(source, /function beginUnreplicateRange\(event, x\)/);
+  assert.match(source, /specialControl && role !== "fork"/);
+  assert.match(source, /Boolean\(replicationAt\(point\.x, getReplicationModel\(\)\)\.region\)/);
+  assert.match(source, /beginUnreplicateRange\(event, point\.x\)/);
+  assert.match(source, /commitUnreplicateRange\([\s\S]*?completedDrag\.anchor/);
   assert.doesNotMatch(
-    source.match(/if \(specialControl && role !== "fork" && role !== "origin"\) \{[\s\S]*?\n    \}/)?.[0] || "",
+    source.match(/if \(specialControl && role !== "fork"\) \{[\s\S]*?\n    \}/)?.[0] || "",
     /beginPan/
   );
 });
@@ -3873,4 +3991,225 @@ test("the fit-view control uses a framed artwork icon and resets both aspect axe
   assert.match(fitButton, /<rect x="8" y="8" width="8" height="8" rx="1\.5"/);
   assert.match(fitButton, /M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5/);
   assert.match(source, /function resetView\(\)[\s\S]*state\.advanced\.aspectX = 1;[\s\S]*state\.advanced\.aspectY = 1;/);
+});
+
+
+test("fork transitions preserve their rendered horizontal shape across aspect ratios", () => {
+  const state = freshState();
+  state.length = 250;
+  state.advanced.lengthMode = "scale";
+  state.advanced.aspectY = 1;
+  state.origins = [
+    {
+      id: "aspect-fork",
+      position: 0.5,
+      startPosition: 0.5,
+      leftOffset: 0.18,
+      rightOffset: 0.18,
+    },
+  ];
+  state.forkTravel = 0.08;
+
+  state.advanced.aspectX = 1;
+  api.setState(state);
+  let model = api.getReplicationModelAtTravel(state.forkTravel, state);
+  let region = model.regions[0];
+  const normalWorldWidth = api.regionTransitionWidth(region, state);
+  const normalScreenWidth = normalWorldWidth * api.artworkScaleX(state);
+  const normalTerminalScreenSpan = api.terminalPullSpan(0, "left", state) * api.artworkScaleX(state);
+
+  state.advanced.aspectX = 8;
+  api.syncViewGeometry(state);
+  model = api.getReplicationModelAtTravel(state.forkTravel, state);
+  region = model.regions[0];
+  const stretchedWorldWidth = api.regionTransitionWidth(region, state);
+  const stretchedScreenWidth = stretchedWorldWidth * api.artworkScaleX(state);
+  const stretchedTerminalScreenSpan = api.terminalPullSpan(0, "left", state) * api.artworkScaleX(state);
+
+  assert.ok(Math.abs(stretchedScreenWidth - normalScreenWidth) < 1e-9);
+  assert.ok(Math.abs(stretchedTerminalScreenSpan - normalTerminalScreenSpan) < 1e-9);
+  assert.ok(Math.abs(stretchedWorldWidth * 8 - normalWorldWidth) < 1e-9);
+  assert.match(source, /maximumScreenWidth\s*\/\s*Math\.max\(EPSILON, artworkAspectX\(sourceState\)\)/);
+});
+
+test("long dense helices retain adaptive smooth sampling under horizontal stretching", () => {
+  const state = freshState();
+  state.length = 625;
+  state.pairResolution = 3;
+  state.advanced.lengthMode = "scale";
+  state.advanced.aspectX = 10;
+  state.advanced.aspectY = 1;
+  state.origins = [];
+  state.forkTravel = 0;
+  state.progress = 0;
+  api.setState(state);
+
+  const turns = state.length / 10;
+  const worldWidthPerTurn = api.VIEW.moleculeWidth / turns;
+  const step = api.adaptivePathSampleStep(3, state);
+  assert.ok(step <= worldWidthPerTurn / 24 + 1e-12);
+  assert.ok(step * state.advanced.aspectX <= 3 + 1e-12);
+
+  const model = api.getReplicationModelAtTravel(0, state);
+  const path = api.sampledPath(
+    api.VIEW.x0,
+    api.VIEW.x1,
+    (x) => api.templateY(x, "a", model),
+    3,
+    null,
+    [],
+    [],
+    null
+  );
+  const segments = cubicSegments(path);
+  assert.ok(segments.length >= turns * 24 - 2);
+  assert.ok(segments.length <= 12000 + 2);
+  assert.ok(segments.every((segment) => Number.isFinite(segment.control1.y) && Number.isFinite(segment.control2.y)));
+  assert.match(source, /Keep at least 24 samples per helix turn/);
+});
+
+test("genome length supports scale-changing and right-extension modes with scale-changing as default", () => {
+  const defaults = api.makeDefaultState();
+  assert.equal(defaults.advanced.lengthMode, "scale");
+  assert.equal(api.lengthMode(defaults), "scale");
+  assert.equal(api.moleculeWidthForState(defaults), 1104);
+
+  const scaled = freshState();
+  scaled.length = 50;
+  scaled.advanced.lengthMode = "scale";
+  scaled.origins = [
+    { id: "scale-origin", position: 0.3, startPosition: 0.3, leftOffset: 0.04, rightOffset: 0.06 },
+  ];
+  scaled.cuts = [{ start: 0.2, end: 0.25 }];
+  api.setState(scaled);
+  const scaledOriginFraction = scaled.origins[0].startPosition;
+  api.resizeGenomeLength(100, scaled);
+  assert.equal(api.VIEW.moleculeWidth, 1104);
+  assert.equal(scaled.origins[0].startPosition, scaledOriginFraction);
+  assert.equal(scaled.cuts[0].start, 0.2);
+
+  const extended = freshState();
+  extended.length = 50;
+  extended.advanced.lengthMode = "extend";
+  extended.origins = [
+    { id: "extend-origin", position: 0.3, startPosition: 0.3, leftOffset: 0.04, rightOffset: 0.06 },
+  ];
+  extended.cuts = [{ start: 0.2, end: 0.25 }];
+  extended.forkTravel = 0.1;
+  api.setState(extended);
+  const oldWidth = api.VIEW.moleculeWidth;
+  const oldOriginX = api.VIEW.x0 + extended.origins[0].startPosition * oldWidth;
+  const oldCutStartX = api.VIEW.x0 + extended.cuts[0].start * oldWidth;
+  const oldForkTravelPx = extended.forkTravel * oldWidth;
+
+  api.resizeGenomeLength(100, extended);
+  assert.equal(api.VIEW.moleculeWidth, oldWidth * 2);
+  assert.ok(Math.abs(api.VIEW.x0 + extended.origins[0].startPosition * api.VIEW.moleculeWidth - oldOriginX) < 1e-9);
+  assert.ok(Math.abs(api.VIEW.x0 + extended.cuts[0].start * api.VIEW.moleculeWidth - oldCutStartX) < 1e-9);
+  assert.ok(Math.abs(extended.forkTravel * api.VIEW.moleculeWidth - oldForkTravelPx) < 1e-9);
+  assert.equal(extended.origins[0].startPosition, 0.15);
+  assert.equal(extended.cuts[0].start, 0.1);
+  assert.equal(api.gridColumnCount(extended), 24);
+  assert.ok(
+    Math.abs(
+      api.VIEW.moleculeWidth / api.gridColumnCount(extended) -
+        oldWidth / api.GRID_COLUMN_COUNT
+    ) < 1e-9
+  );
+
+  // Even under horizontal aspect stretching, the left-anchored fixed scale
+  // keeps all pre-existing genomic coordinates stationary as the right end grows.
+  const aspectExtended = freshState();
+  aspectExtended.length = 50;
+  aspectExtended.advanced.lengthMode = "extend";
+  aspectExtended.advanced.aspectX = 4;
+  aspectExtended.origins = [
+    { id: "aspect-extend", position: 0.3, startPosition: 0.3, leftOffset: 0, rightOffset: 0 },
+  ];
+  api.setState(aspectExtended);
+  const beforeAspectX = api.transformedArtworkPoint(
+    api.VIEW.x0 + aspectExtended.origins[0].startPosition * api.VIEW.moleculeWidth,
+    api.VIEW.centerY,
+    aspectExtended
+  ).x;
+  api.resizeGenomeLength(100, aspectExtended);
+  const afterAspectX = api.transformedArtworkPoint(
+    api.VIEW.x0 + aspectExtended.origins[0].startPosition * api.VIEW.moleculeWidth,
+    api.VIEW.centerY,
+    aspectExtended
+  ).x;
+  assert.ok(Math.abs(afterAspectX - beforeAspectX) < 1e-9);
+
+  const selector = html.match(/<select id="lengthModeControl">[\s\S]*?<\/select>/)?.[0] || "";
+  assert.match(selector, /<option value="scale" selected>Change bar scale<\/option>/);
+  assert.match(selector, /<option value="extend">Extend to the right<\/option>/);
+});
+
+test("Space toggles playback outside editable controls and restarts completed S phase", () => {
+  assert.equal(
+    api.isPlaybackSpaceShortcut({ key: " ", code: "Space", target: { tagName: "DIV" } }),
+    true
+  );
+  assert.equal(
+    api.isPlaybackSpaceShortcut({ key: " ", code: "Space", target: { tagName: "INPUT" } }),
+    false
+  );
+  assert.equal(
+    api.isPlaybackSpaceShortcut({ key: " ", code: "Space", repeat: true, target: { tagName: "DIV" } }),
+    false
+  );
+  assert.equal(
+    api.isPlaybackSpaceShortcut({ key: " ", code: "Space", ctrlKey: true, target: { tagName: "DIV" } }),
+    false
+  );
+  assert.match(source, /if \(isPlaybackSpaceShortcut\(event\)\) \{[\s\S]*?toggleAnimation\(\);/);
+  assert.match(
+    source,
+    /if \(getReplicationModel\(\)\.activeForkCount === 0 \|\| state\.progress >= 100\) \{[\s\S]*?state\.forkTravel = 0;[\s\S]*?state\.progress = 0;/
+  );
+});
+
+
+test("right-extension mode preserves fork speed, grid scale, and video timing dependencies", () => {
+  const scaled = freshState();
+  scaled.length = 50;
+  scaled.advanced.lengthMode = "scale";
+  scaled.discreteAnimation = false;
+  scaled.speed = api.BASE_PLAYBACK_SPEED;
+  scaled.origins = [
+    { id: "scaled-speed", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 },
+  ];
+  scaled.forkTravel = 0;
+  api.setState(scaled);
+  const scaledWidth = api.VIEW.moleculeWidth;
+  api.advanceForkPlayback(100, scaled);
+  const scaledPixels = scaled.forkTravel * scaledWidth;
+  const scaledPlan = api.videoFramePlan(scaled);
+
+  const extended = freshState();
+  extended.length = 100;
+  extended.advanced.lengthMode = "extend";
+  extended.discreteAnimation = false;
+  extended.speed = api.BASE_PLAYBACK_SPEED;
+  extended.origins = [
+    { id: "extended-speed", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+  ];
+  extended.forkTravel = 0;
+  api.setState(extended);
+  const extendedWidth = api.VIEW.moleculeWidth;
+  assert.equal(api.genomeDistanceScale(extended), 0.5);
+  api.advanceForkPlayback(100, extended);
+  const extendedPixels = extended.forkTravel * extendedWidth;
+  const extendedPlan = api.videoFramePlan(extended);
+
+  assert.ok(Math.abs(extendedPixels - scaledPixels) < 1e-9);
+  assert.ok(
+    Math.abs(
+      extendedPlan.travelPerFrame * extendedWidth -
+        scaledPlan.travelPerFrame * scaledWidth
+    ) < 1e-9
+  );
+  assert.equal(api.gridColumnCount(extended), 24);
+  assert.match(source, /speed \* genomeDistanceScale\(sourceState\)/);
+  assert.match(source, /speed \*[\s\S]*genomeDistanceScale\(videoState\)/);
 });
