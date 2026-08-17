@@ -130,7 +130,7 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.5 15.5A7 7 0 1 1 15.5 15.5c-.8.65-1.2 1.45-1.25 2.5h-4.5c-.05-1.05-.45-1.85-1.25-2.5Z" /></svg>
                 <span>Raise an issue</span>
               </a>
-              <button id="aboutMenuButton" type="button" role="menuitem" aria-haspopup="dialog" aria-controls="aboutDialog" aria-expanded="false">
+              <button id="aboutMenuButton" type="button" role="menuitem">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="12" cy="12" r="9" />
                   <path d="M12 10.5v6M12 7.5h.01" />
@@ -351,14 +351,25 @@
                     <input id="includeExportBackgroundToggle" type="checkbox" />
                     <span class="rs-toggle-track" aria-hidden="true"></span>
                   </label>
+                  <label class="rs-toggle" for="contourToggle">
+                    <span>Cartoon contour</span>
+                    <input id="contourToggle" type="checkbox" />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
                 </div>
-
                 <div class="rs-options-group rs-options-dropdown-group">
-                  <div class="rs-select-control rs-compact-select rs-options-select rs-length-mode-control">
+                  <div class="rs-select-control rs-compact-select rs-options-select">
                     <label for="lengthModeControl">Genome resizing</label>
                     <select id="lengthModeControl">
-                      <option value="scale" selected>Rescale chromosome</option>
-                      <option value="extend">Extend right end</option>
+                      <option value="scale" selected>Rescale to fit</option>
+                      <option value="extend">Extend to the right</option>
+                    </select>
+                  </div>
+                  <div class="rs-select-control rs-compact-select rs-options-select">
+                    <label for="dnaHandednessControl">DNA chirality</label>
+                    <select id="dnaHandednessControl">
+                      <option value="left" selected>Left-handed helix</option>
+                      <option value="right">Right-handed helix</option>
                     </select>
                   </div>
                   <div class="rs-select-control rs-compact-select rs-options-select">
@@ -370,7 +381,6 @@
                     </select>
                   </div>
                 </div>
-
                 <div class="rs-options-group rs-options-slider-group">
                   <div class="rs-range-control rs-options-range">
                     <label for="newDnaStartDistanceControl">
@@ -408,12 +418,22 @@
                       <span>Snap</span><span>Near</span><span>Far</span>
                     </div>
                   </div>
+                  <div class="rs-range-control rs-options-range" id="contourThicknessOption" hidden>
+                    <label for="contourThicknessControl">
+                      <span>Contour width</span>
+                      <output id="contourThicknessOutput" for="contourThicknessControl">2 px</output>
+                    </label>
+                    <input id="contourThicknessControl" type="range" min="0.5" max="10" step="0.5" value="2" />
+                  </div>
                 </div>
-
                 <div class="rs-options-group rs-options-colour-group">
                   <label class="rs-colour-option" for="backgroundColorControl">
                     <span>Background colour</span>
                     <input id="backgroundColorControl" type="color" value="#f8faf9" />
+                  </label>
+                  <label class="rs-colour-option" id="contourColorOption" for="contourColorControl" hidden>
+                    <span>Contour colour</span>
+                    <input id="contourColorControl" type="color" value="#000000" />
                   </label>
                 </div>
               </div>
@@ -451,10 +471,7 @@
           </div>
 
           <div class="rs-canvas-frame" id="canvasFrame">
-            <svg id="dnaCanvas" viewBox="0 0 1200 640" role="img" aria-labelledby="dnaCanvasTitle dnaCanvasDescription" tabindex="0">
-              <title id="dnaCanvasTitle">RepliSketch DNA replication diagram</title>
-              <desc id="dnaCanvasDescription">An interactive vector diagram of DNA replication.</desc>
-            </svg>
+            <svg id="dnaCanvas" viewBox="0 0 1200 640" role="img" aria-labelledby="dnaCanvasTitle dnaCanvasDescription" tabindex="0"></svg>
             <div class="rs-canvas-legend" id="canvasLegend" aria-label="Strand colour legend"></div>
             <div class="rs-chromosome-ruler" id="chromosomeRuler" aria-label="Genomic position"></div>
             <div class="rs-zoom-controls" aria-label="Preview zoom">
@@ -485,7 +502,7 @@
               <span id="selectionMessage">No selection</span>
               <span class="rs-status-separator" aria-hidden="true">|</span>
               <span id="statusMessage">Ready</span>
-              <a class="rs-video-save-link" id="videoSaveLink" hidden>Save MP4</a>
+              <a class="rs-video-save-link" id="videoSaveLink" type="video/mp4" hidden>Download MP4</a>
             </div>
             <nav class="rs-project-meta rs-status-project-meta" aria-label="RepliSketch project links">
               <span class="rs-project-version">v1.0.0</span>
@@ -536,33 +553,50 @@
       </div>
     </div>
 
-    <div class="rs-about-overlay" id="aboutDialog" hidden aria-hidden="true">
+    <div class="rs-about-backdrop" id="aboutModal" hidden>
       <section
         class="rs-about-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aboutTitle"
         aria-describedby="aboutDescription"
-        tabindex="-1"
       >
-        <button class="rs-about-close" id="aboutCloseButton" type="button" aria-label="Close About">
+        <button class="rs-about-close" id="aboutCloseButton" type="button" aria-label="Close About RepliSketch">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
-        <img class="rs-about-logo" src="assets/img/logo2.png" alt="RepliSketch" />
-        <h2 id="aboutTitle">RepliSketch</h2>
-        <p id="aboutDescription" class="rs-about-lead">
-          RepliSketch is a browser-based visual studio for turning DNA replication programmes into clear,
-          publication-ready figures and animations.
+        <img class="rs-about-logo" src="assets/img/logo1.png" alt="RepliSketch" />
+        <h2 id="aboutTitle">From replication dynamics to clear scientific visuals</h2>
+        <p id="aboutDescription">
+          RepliSketch is an interactive visual studio for turning DNA replication dynamics into clear,
+          publication-ready figures and animations. Build replication programmes directly on the canvas,
+          shape origins and forks through S phase, and export precise visuals for research, teaching and
+          scientific communication.
         </p>
-        <p class="rs-about-copy">
-          Shape origins, forks, bubbles, and breaks directly on the canvas, refine the molecular geometry,
-          explore the progression of S phase, and export the result as editable vector artwork, high-resolution
-          images, or video. It is designed to make complex replication dynamics intuitive to build, inspect,
-          and communicate.
-        </p>
-        <div class="rs-about-rule" aria-hidden="true"></div>
-        <p class="rs-about-credit">&copy; 2026 Francisco Berkemeier</p>
-        <a class="rs-about-email" href="mailto:fp409@cam.ac.uk">fp409@cam.ac.uk</a>
+        <div class="rs-about-meta">
+          <span>&copy; 2026 Francisco Berkemeier</span>
+          <a href="mailto:fp409@cam.ac.uk">fp409@cam.ac.uk</a>
+        </div>
+      </section>
+    </div>
+
+
+    <div class="rs-video-ready-backdrop" id="videoReadyModal" hidden>
+      <section
+        class="rs-video-ready-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="videoReadyTitle"
+        aria-describedby="videoReadyMessage"
+      >
+        <button class="rs-video-ready-close" id="videoReadyCloseButton" type="button" aria-label="Close animation download dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+        <svg class="rs-video-ready-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v11M7.5 10.5 12 15l4.5-4.5M5 20h14" />
+        </svg>
+        <h2 id="videoReadyTitle">Animation ready</h2>
+        <p id="videoReadyMessage">Select Download MP4 to complete a browser-recognised download.</p>
+        <a class="rs-video-ready-download" id="videoReadyDownloadButton" type="video/mp4">Download MP4</a>
       </section>
     </div>
   </body>

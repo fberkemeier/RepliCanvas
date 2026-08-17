@@ -13,6 +13,7 @@ const html = fs.readFileSync(htmlPath, "utf8");
 const testApi = `
   globalThis.__replisketchTest = {
     VIEW,
+    TEMPLATE_CACHE_KEY,
     BASE_PLAYBACK_SPEED,
     SPEED_MULTIPLIER_RANGE,
     MAX_BASE_PAIR_COUNT,
@@ -57,9 +58,23 @@ const testApi = `
     contextGlyphMarkup,
     canvasActionAtPoint,
     configurationDocument,
+    cachedTemplateState,
+    persistTemplateCacheNow,
+    scheduleTemplateCache,
     configuredBackgroundColor,
+    contourEnabled,
+    contourThickness,
+    contourColor,
+    contourStrokeWidth,
     connectedStrandShiftFraction,
+    contourColor,
+    contourEnabled,
+    contourStrokeWidth,
+    contourThickness,
+    crossoverAIsOver,
+    crossoverBridgeContourInset,
     crossoverClipHalfWidth,
+    crossoverAIsOver,
     crossoverSites,
     cutInteractionFraction,
     cutInteractionRange,
@@ -69,6 +84,8 @@ const testApi = `
     discreteAnimationEnabled,
     drawVideoFrame,
     darkArtworkEnabled,
+    dnaHandedness,
+    dnaHandedness,
     displayedBasePairPositions,
     effectiveForkTravel,
     effectiveTerminalSmoothing,
@@ -87,23 +104,32 @@ const testApi = `
     genomicPositionAtFraction,
     genomeDistanceScale,
     gridColumnCount,
-    gridWorldStep,
     helixWave,
     insetBasePairSegment,
     invertHexColour,
     interactionHalfHeight,
     isCutGap,
+    isUnderpassGap,
     isPlaybackSpaceShortcut,
     latticeSpanFraction,
     lengthMode,
     moleculeWidthForState,
+    aboutModalIsOpen,
+    videoReadyModalIsOpen,
+    openVideoReadyModal,
+    closeVideoReadyModal,
+    openAboutModal,
+    closeAboutModal,
     makeVideoExportState,
+    manualForkMergeTolerance,
     maximumLengthForBasePairCount,
     makeDefaultState,
     makeOrigins,
     mergeOverlappingBubbleState,
     mergeOverlappingBubbleDuringDrag,
     minimalMergeClosureMetrics,
+    minimalManualEndOvershootFraction,
+    minimalManualEndOvershootFraction,
     minimalRegionEdgeTransitionWidth,
     minimalReplicationAt,
     modelSupportsDoubleStrandDetails,
@@ -116,11 +142,13 @@ const testApi = `
     niceIntegerCeiling,
     normaliseStateSchema,
     normaliseExportStrokeWidths,
+    normaliseMp4Blob,
     normaliseCutRegions,
     nextAvailableOriginId,
     nativeWebmMimeTypes,
     parentalPairApproachFade,
     parentalPairFade,
+    prepareAnimationDownloadWindow,
     parseConfigurationText,
     referenceBasePairSpacingPx,
     referenceBasePairSubdivisionCount,
@@ -139,6 +167,10 @@ const testApi = `
     replicatedFraction,
     renderBasePairLine,
     renderBasePairs,
+    renderCrossoverOverpasses,
+    renderCrossoverBridgePath,
+    renderArtworkPath,
+    renderArtworkPath,
     renderNascentDna,
     reseedBasePairSequence,
     resizeGenomeLength,
@@ -151,6 +183,7 @@ const testApi = `
     sampledPath,
     schematicNascentStartProfile,
     requestAnimationSaveHandle,
+    publishVideoDownload,
     saveMp4Blob,
     saveMp4ToHandle,
     screenToWorld,
@@ -640,7 +673,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     basePairWidth: 20,
     weight: 20,
     daughterSpacing: 1000,
-    doubleStrandHeight: 1000,
+    doubleStrandHeight: 100,
     speed: 50,
     advanced: { terminalSmoothing: 99, transitionTightness: 1000 },
   });
@@ -650,7 +683,7 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(high.basePairWidth, 16);
   assert.equal(high.weight, 20);
   assert.equal(high.daughterSpacing, 800);
-  assert.equal(high.doubleStrandHeight, 160);
+  assert.equal(high.doubleStrandHeight, 100);
   assert.equal(high.speed, 2.75 * 3);
   assert.equal(high.advanced.terminalSmoothing, 6);
   assert.equal(high.advanced.transitionTightness, 100);
@@ -1460,7 +1493,7 @@ test("artwork aspect is persistent, pointer-correct, and shared by preview and v
   assert.equal(api.aspectFactorFromSlider("x", 0), 1);
   assert.equal(api.aspectFactorFromSlider("x", 100), 10);
   assert.equal(api.aspectFactorFromSlider("x", -100), 0.1);
-  assert.equal(api.aspectFactorFromSlider("y", 100), 10);
+  assert.equal(api.aspectFactorFromSlider("y", 100), 5);
   assert.equal(api.aspectFactorFromSlider("y", -100), 0.1);
   assert.ok(Math.abs(api.aspectSliderValue("x", { advanced: { aspectX: 1 } })) < 1e-12);
 });
@@ -2899,8 +2932,9 @@ test("MP4 export asks for a filename first and falls back to a browser download 
   assert.equal(link.href, "blob:replisketch-video");
   assert.equal(link.download, "replisketch.mp4");
   assert.equal(link.hidden, false);
-  assert.equal(clicked, 1);
+  assert.equal(clicked, 0, "automatic clicks after asynchronous encoding are intentionally avoided");
   assert.match(source, /showSaveFilePicker/);
+  assert.match(source, /Select the button below to complete a browser-recognised download/);
 });
 
 test("MP4 busy state changes Download to Generating and restores it", () => {
@@ -3708,7 +3742,7 @@ test("the fixed preview grid spans both genomic endpoints independently of base-
   assert.equal(api.GRID_COLUMN_COUNT, 12);
   const gridStep = api.VIEW.moleculeWidth / api.GRID_COLUMN_COUNT;
   assert.equal(api.VIEW.x0 + gridStep * api.GRID_COLUMN_COUNT, api.VIEW.x1);
-  assert.match(source, /VIEW\.x0 \+ gridWorldStep\(state\)/);
+  assert.match(source, /VIEW\.x0 \+ VIEW\.moleculeWidth \/ columns/);
   assert.match(source, /const anchor = transformedSvgPoint\(VIEW\.x0/);
   assert.doesNotMatch(source, /--rs-grid-x[^\n]*basePairResolution/);
 });
@@ -4304,8 +4338,129 @@ test("genome length supports scale-changing and right-extension modes with scale
   assert.ok(Math.abs(afterAspectX - beforeAspectX) < 1e-9);
 
   const selector = html.match(/<select id="lengthModeControl">[\s\S]*?<\/select>/)?.[0] || "";
-  assert.match(selector, /<option value="scale" selected>Rescale chromosome<\/option>/);
-  assert.match(selector, /<option value="extend">Extend right end<\/option>/);
+  assert.match(selector, /<option value="scale" selected>Rescale to fit<\/option>/);
+  assert.match(selector, /<option value="extend">Extend to the right<\/option>/);
+});
+
+
+test("minimal end smoothing lifts both chromosome endpoints only after contact", () => {
+  const state = freshState();
+  state.advanced.strandModel = "minimal";
+  state.advanced.terminalSmoothing = 2;
+  state.origins = [
+    { id: "both-ends", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 },
+  ];
+  const contactTravel = 0.5;
+  state.forkTravel = contactTravel;
+  api.setState(state);
+
+  const contact = api.getReplicationModel();
+  assert.equal(contact.regions[0].startClosureBlend, 0);
+  assert.equal(contact.regions[0].endClosureBlend, 0);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x0, contact).profile, 0);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, contact).profile, 0);
+
+  const pullFraction = api.terminalPullSpan(0, "left", state) / api.VIEW.moleculeWidth;
+  state.forkTravel = contactTravel + pullFraction / 2;
+  api.setState(state);
+  const halfway = api.getReplicationModel();
+  assert.ok(Math.abs(halfway.regions[0].startClosureBlend - 0.5) < 1e-10);
+  assert.ok(Math.abs(halfway.regions[0].endClosureBlend - 0.5) < 1e-10);
+  assert.ok(Math.abs(api.minimalReplicationAt(api.VIEW.x0, halfway).profile - 0.5) < 1e-10);
+  assert.ok(Math.abs(api.minimalReplicationAt(api.VIEW.x1, halfway).profile - 0.5) < 1e-10);
+  assert.ok(api.templateY(api.VIEW.x0, "a", halfway) < api.VIEW.centerY);
+  assert.ok(api.templateY(api.VIEW.x0, "b", halfway) > api.VIEW.centerY);
+  assert.ok(api.templateY(api.VIEW.x1, "a", halfway) < api.VIEW.centerY);
+  assert.ok(api.templateY(api.VIEW.x1, "b", halfway) > api.VIEW.centerY);
+
+  state.forkTravel = api.forkTravelBounds(state).full;
+  api.setState(state);
+  const complete = api.getReplicationModel();
+  assert.equal(complete.regions[0].startClosureBlend, 1);
+  assert.equal(complete.regions[0].endClosureBlend, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x0, complete).profile, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, complete).profile, 1);
+});
+
+test("advanced options are grouped by interaction type and genome resizing precedes base-pair animation", () => {
+  const advanced = html.match(/<details class="rs-options-menu" id="advancedOptions">[\s\S]*?<\/details>/)?.[0] || "";
+  assert.match(advanced, /rs-options-group rs-options-switch-group/);
+  assert.match(advanced, /rs-options-group rs-options-dropdown-group/);
+  assert.match(advanced, /rs-options-group rs-options-slider-group/);
+  assert.match(advanced, /rs-options-group rs-options-colour-group/);
+  assert.ok(advanced.indexOf('id="lengthModeControl"') < advanced.indexOf('id="basePairTransitionControl"'));
+  assert.match(advanced, /<label for="lengthModeControl">Genome resizing<\/label>/);
+  assert.doesNotMatch(
+    html.match(/<section class="rs-control-section rs-compact-section">[\s\S]*?<h2>Geometry<\/h2>[\s\S]*?<\/section>/)?.[0] || "",
+    /lengthModeControl/
+  );
+  assert.match(css, /\.rs-options-group \+ \.rs-options-group\s*\{[^}]*border-top:/s);
+  assert.match(css, /\.rs-options-group \.rs-options-range[\s\S]*?border-top:\s*0/s);
+  assert.match(css, /\.rs-options-group \.rs-options-select[\s\S]*?border-top:\s*0/s);
+});
+
+test("geometry controls expose wider spacing and vertical aspect ranges in the requested order", () => {
+  const geometry = html.match(/<h2>Geometry<\/h2>[\s\S]*?<\/section>/)?.[0] || "";
+  assert.ok(geometry.indexOf('id="weightControl"') < geometry.indexOf('id="basePairWidthControl"'));
+  assert.match(geometry, /<span>Strand width<\/span>/);
+  assert.doesNotMatch(geometry, /Strand weight/);
+  assert.match(geometry, /id="daughterSpacingControl"[^>]*max="800"/);
+  assert.match(geometry, /id="doubleStrandHeightControl"[^>]*max="160"/);
+  assert.equal(api.boundedControlValue("daughterSpacing", 9999), 800);
+  assert.equal(api.boundedControlValue("doubleStrandHeight", 9999), 160);
+  assert.equal(api.aspectFactorFromSlider("y", -100), 0.1);
+  assert.equal(api.aspectFactorFromSlider("y", 100), 5);
+});
+
+test("fit view derives zoom and pan from right-extended genome length", () => {
+  const scaled = freshState();
+  scaled.length = 100;
+  scaled.advanced.lengthMode = "scale";
+  const scaledFit = api.fittedViewState(scaled);
+  assert.equal(scaledFit.zoom, 1);
+  assert.equal(scaledFit.panX, 0);
+  assert.equal(scaledFit.panY, 0);
+
+  const extended = freshState();
+  extended.length = 100;
+  extended.advanced.lengthMode = "extend";
+  const fitted = api.fittedViewState(extended);
+  assert.ok(Math.abs(fitted.zoom - 0.5) < 1e-12);
+  assert.ok(Math.abs(fitted.panX + 276) < 1e-12);
+  const left = api.VIEW.width / 2 + fitted.panX +
+    (api.VIEW.x0 - api.VIEW.width / 2) * fitted.zoom;
+  const right = api.VIEW.width / 2 + fitted.panX +
+    (api.VIEW.x1 - api.VIEW.width / 2) * fitted.zoom;
+  assert.ok(Math.abs(left - 48) < 1e-9);
+  assert.ok(Math.abs(right - 1152) < 1e-9);
+  assert.match(source, /viewState = fittedViewState\(state\)/);
+});
+
+test("right-extension grid spacing remains exact between non-round genome lengths", () => {
+  const extended = freshState();
+  extended.length = 55;
+  extended.advanced.lengthMode = "extend";
+  api.setState(extended);
+  const columns = api.gridColumnCount(extended);
+  assert.ok(Math.abs(columns - 13.2) < 1e-12);
+  assert.ok(
+    Math.abs(api.VIEW.moleculeWidth / columns - 1104 / api.GRID_COLUMN_COUNT) < 1e-9
+  );
+  assert.match(source, /exact \(possibly fractional\) number/);
+});
+
+test("Menu exposes an accessible blurred About dialog with project identity and contact", () => {
+  assert.match(html, /id="aboutMenuButton"[^>]*role="menuitem"/);
+  assert.match(html, /id="aboutModal"[^>]*hidden/);
+  assert.match(html, /role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /class="rs-about-logo"[^>]*src="assets\/img\/logo1\.png"/);
+  assert.doesNotMatch(html, /<h2[^>]*>\s*RepliSketch\s*<\/h2>/);
+  assert.match(html, /© 2026 Francisco Berkemeier|&copy; 2026 Francisco Berkemeier/);
+  assert.match(html, /mailto:fp409@cam\.ac\.uk/);
+  assert.match(css, /\.rs-about-backdrop\s*\{[\s\S]*?backdrop-filter:\s*blur\(9px\)/);
+  assert.match(css, /\.rs-about-dialog\s*\{[\s\S]*?place-items|\.rs-about-dialog\s*\{/);
+  assert.match(source, /elements\.aboutMenuButton\.addEventListener\("click", openAboutModal\)/);
+  assert.match(source, /if \(aboutModalIsOpen\(\)\) \{[\s\S]*?event\.key === "Escape"/);
 });
 
 test("Space toggles playback outside editable controls and restarts completed S phase", () => {
@@ -4389,146 +4544,328 @@ test("right-extension mode preserves fork speed, grid scale, and video timing de
   assert.match(source, /speed \*[\s\S]*genomeDistanceScale\(videoState\)/);
 });
 
-test("minimal merge/end smoothing lifts both chromosome endpoints only after contact", () => {
-  const state = freshState();
-  state.advanced.strandModel = "minimal";
-  state.advanced.terminalSmoothing = 1.5;
-  state.origins = [
-    { id: "both-ends", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 },
+test("minimal forks can be dragged open at chromosome ends and merged at opposing forks", () => {
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+
+  const endState = freshState();
+  endState.advanced.strandModel = "minimal";
+  endState.advanced.terminalSmoothing = 2;
+  endState.forkTravel = 0;
+  endState.origins = [
+    {
+      id: "manual-end",
+      position: 0.5,
+      startPosition: 0.5,
+      leftOffset: 0.2,
+      rightOffset: 0.2,
+    },
   ];
-  const contactTravel = 0.5;
+  api.setState(endState);
+  const before = api.getReplicationModelAtTravel(0, endState).origins[0];
+  const endDrag = {
+    role: "fork",
+    side: "left",
+    originId: "manual-end",
+    originStartPosition: 0.5,
+    originLeftOffset: 0.2,
+    originRightOffset: 0.2,
+    leftPosition: before.leftPosition,
+    rightPosition: before.rightPosition,
+    pairedForks: true,
+    mirroredForks: false,
+  };
+  const endResult = api.applyForkDragPosition(endDrag, 0, endState);
+  assert.ok(endResult);
+  const openedModel = api.getReplicationModelAtTravel(endState.forkTravel, endState);
+  const openedOrigin = openedModel.origins[0];
+  assert.equal(openedOrigin.leftPosition, 0);
+  assert.ok(openedOrigin.leftClosureBlend > 1 - 1e-9);
+  assert.ok(api.minimalReplicationAt(api.VIEW.x0, openedModel, endState).profile > 1 - 1e-9);
+  assert.ok(api.minimalManualEndOvershootFraction(endState) > 0);
 
-  state.forkTravel = contactTravel;
-  api.setState(state);
-  const contact = api.getReplicationModel();
-  assert.equal(contact.regions[0].startClosureBlend, 0);
-  assert.equal(contact.regions[0].endClosureBlend, 0);
-  assert.equal(api.minimalReplicationAt(api.VIEW.x0, contact).profile, 0);
-  assert.equal(api.minimalReplicationAt(api.VIEW.x1, contact).profile, 0);
-  assert.equal(api.templateY(api.VIEW.x0, "a", contact), api.VIEW.centerY);
-  assert.equal(api.templateY(api.VIEW.x1, "b", contact), api.VIEW.centerY);
+  const collapseState = freshState();
+  collapseState.advanced.strandModel = "minimal";
+  collapseState.advanced.terminalSmoothing = 2;
+  collapseState.forkTravel = 0;
+  collapseState.origins = [
+    {
+      id: "manual-collapse",
+      position: 0.5,
+      startPosition: 0.5,
+      leftOffset: 0.2,
+      rightOffset: 0.2,
+    },
+  ];
+  api.setState(collapseState);
+  const collapseGeometry = api.getReplicationModelAtTravel(0, collapseState).origins[0];
+  const collapseResult = api.applyForkDragPosition(
+    {
+      role: "fork",
+      side: "left",
+      originId: "manual-collapse",
+      originStartPosition: 0.5,
+      originLeftOffset: 0.2,
+      originRightOffset: 0.2,
+      leftPosition: collapseGeometry.leftPosition,
+      rightPosition: collapseGeometry.rightPosition,
+      pairedForks: true,
+      mirroredForks: false,
+    },
+    collapseGeometry.rightPosition,
+    collapseState
+  );
+  assert.equal(collapseResult.collapsePending, true);
 
-  const pullFraction = api.terminalPullSpan(0, "left", state) / api.VIEW.moleculeWidth;
-  state.forkTravel = contactTravel + pullFraction / 2;
+  const mergeState = freshState();
+  mergeState.advanced.strandModel = "minimal";
+  mergeState.advanced.terminalSmoothing = 2;
+  mergeState.forkTravel = 0;
+  mergeState.origins = [
+    {
+      id: "manual-left",
+      position: 0.3,
+      startPosition: 0.3,
+      leftOffset: 0.1,
+      rightOffset: 0.1,
+    },
+    {
+      id: "manual-right",
+      position: 0.7,
+      startPosition: 0.7,
+      leftOffset: 0.1,
+      rightOffset: 0.1,
+    },
+  ];
+  api.setState(mergeState);
+  const mergeGeometry = api.getReplicationModelAtTravel(0, mergeState).origins[0];
+  const tolerance = api.manualForkMergeTolerance(mergeState);
+  assert.ok(tolerance > 1e-8);
+  api.applyForkDragPosition(
+    {
+      role: "fork",
+      side: "right",
+      originId: "manual-left",
+      originStartPosition: 0.3,
+      originLeftOffset: 0.1,
+      originRightOffset: 0.1,
+      leftPosition: mergeGeometry.leftPosition,
+      rightPosition: mergeGeometry.rightPosition,
+      pairedForks: true,
+      mirroredForks: false,
+    },
+    0.6 - tolerance / 2,
+    mergeState
+  );
+  const merged = api.mergeOverlappingBubbleState("manual-left", mergeState, tolerance);
+  assert.ok(merged);
+  assert.equal(merged.originIds.length, 2);
+  assert.equal(mergeState.origins.length, 1);
+  assert.match(source, /mergeTouchingBubbles\(completedDrag\.originId, mergeTolerance\)/);
+});
+
+test("the current template is cached across browser sessions and restored fitted to the window", () => {
+  const values = new Map();
+  sandbox.localStorage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+
+  const state = freshState();
+  state.length = 200;
+  state.advanced.lengthMode = "extend";
+  state.advanced.aspectX = 1.8;
+  state.advanced.aspectY = 1.4;
+  state.progress = 37;
+  state.playing = true;
   api.setState(state);
-  const halfway = api.getReplicationModel();
-  assert.ok(Math.abs(halfway.regions[0].startClosureBlend - 0.5) < 1e-10);
-  assert.ok(Math.abs(halfway.regions[0].endClosureBlend - 0.5) < 1e-10);
-  for (const x of [api.VIEW.x0, api.VIEW.x1]) {
-    assert.ok(Math.abs(api.minimalReplicationAt(x, halfway).profile - 0.5) < 1e-10);
-    assert.ok(
-      Math.abs(api.templateY(x, "a", halfway) - (api.VIEW.centerY - state.daughterSpacing / 4)) < 1e-8
-    );
-    assert.ok(
-      Math.abs(api.templateY(x, "b", halfway) - (api.VIEW.centerY + state.daughterSpacing / 4)) < 1e-8
-    );
+
+  assert.equal(api.persistTemplateCacheNow(), true);
+  const cachedText = values.get(api.TEMPLATE_CACHE_KEY);
+  assert.ok(cachedText);
+  const cachedDocument = JSON.parse(cachedText);
+  assert.equal(cachedDocument.format, "RepliSketch");
+  assert.equal(cachedDocument.state.playing, false);
+
+  const restored = api.cachedTemplateState();
+  assert.equal(restored.length, 200);
+  assert.equal(restored.advanced.lengthMode, "extend");
+  assert.equal(restored.advanced.aspectX, 1.8);
+  assert.equal(restored.advanced.aspectY, 1.4);
+  assert.equal(restored.playing, false);
+  const fitted = api.fittedViewState(restored);
+  assert.ok(fitted.zoom < 1, "a long, stretched cached genome must reopen fitted to the viewport");
+
+  values.set(api.TEMPLATE_CACHE_KEY, "not-json");
+  assert.equal(api.cachedTemplateState(), null);
+  assert.equal(values.has(api.TEMPLATE_CACHE_KEY), false, "damaged cache entries are discarded safely");
+  delete sandbox.localStorage;
+
+  assert.match(source, /state = cachedTemplateState\(\) \|\| makeDefaultState\(\)/);
+  assert.match(source, /viewState = fittedViewState\(state\)/);
+  assert.match(source, /persistTemplateCacheNow\(\);[\s\S]*?URL\.revokeObjectURL/);
+});
+
+test("DNA handedness defaults to right-handed and reverses crossover depth and cutouts", () => {
+  const state = freshState();
+  state.advanced.strandModel = "standard";
+  state.advanced.crossoverGaps = true;
+  state.forkTravel = 0;
+  api.setState(state);
+  const model = api.getReplicationModelAtTravel(0, state);
+  const firstSite = api.crossoverSites(state)[0];
+
+  assert.equal(api.dnaHandedness(state), "left");
+  assert.equal(api.crossoverAIsOver(firstSite.index, state), false);
+  assert.equal(api.isUnderpassGap(firstSite.x, "a", model), true);
+  assert.equal(api.isUnderpassGap(firstSite.x, "b", model), false);
+
+  state.advanced.dnaHandedness = "right";
+  api.setState(state);
+  const rightModel = api.getReplicationModelAtTravel(0, state);
+  assert.equal(api.dnaHandedness(state), "right");
+  assert.equal(api.crossoverAIsOver(firstSite.index, state), true);
+  assert.equal(api.isUnderpassGap(firstSite.x, "a", rightModel), false);
+  assert.equal(api.isUnderpassGap(firstSite.x, "b", rightModel), true);
+
+  state.advanced.dnaHandedness = "left";
+  api.setState(state);
+  const documentState = api.configurationDocument();
+  const restored = api.parseConfigurationText(JSON.stringify(documentState));
+  assert.equal(restored.advanced.dnaHandedness, "left");
+
+  const dropdownGroup = html.match(/<div class="rs-options-group rs-options-dropdown-group">([\s\S]*?)<\/div>\s*<div class="rs-options-group rs-options-slider-group">/)?.[1] || "";
+  assert.match(dropdownGroup, /for="dnaHandednessControl">DNA handedness/);
+  assert.match(dropdownGroup, /<option value="left" selected>Left-handed helix<\/option>/);
+  assert.match(dropdownGroup, /<option value="right">Right-handed helix<\/option>/);
+  assert.match(source, /elements\.dnaHandednessControl\.disabled = modelName !== "standard"/);
+});
+
+test("optional cartoon contours cover strands and base pairs in every compatible model", () => {
+  const state = freshState();
+  state.advanced.contour = true;
+  state.advanced.contourThickness = 2;
+  state.advanced.contourColor = "#000000";
+  state.basePairColorMode = "bases";
+  state.colors.adenine = "#aa0000";
+  state.colors.thymine = "#00aa00";
+  api.setState(state);
+
+  assert.equal(api.contourEnabled(state), true);
+  assert.equal(api.contourThickness(state), 2);
+  assert.equal(api.contourColor(state), "#000000");
+  assert.equal(api.contourStrokeWidth(6, state), 10);
+
+  const path = api.renderArtworkPath("M0 0 L10 0", "#ffffff", 6);
+  assert.match(path, /data-rs-contour="true"/);
+  assert.match(path, /stroke="#000000"[^>]*stroke-width="10\.0"/);
+  assert.match(path, /stroke="#ffffff"[^>]*stroke-width="6\.0"/);
+
+  const pair = api.renderBasePairLine(100, 20, 60, 1, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(pair, /data-rs-contour="true"/);
+  assert.equal((pair.match(/data-rs-contour="true"/g) || []).length, 1);
+  assert.match(pair, /data-half="first"/);
+  assert.match(pair, /data-half="second"/);
+
+  for (const modelName of ["standard", "elegant", "minimal"]) {
+    state.advanced.strandModel = modelName;
+    api.setState(state);
+    const markup = api.artworkMarkup(api.getReplicationModelAtTravel(state.forkTravel, state));
+    assert.match(markup, /data-rs-contour="true"/, `${modelName} should render outlined strands`);
   }
 
-  state.forkTravel = api.forkTravelBounds(state).full;
+  const plain = freshState();
+  plain.advanced.contour = false;
+  api.setState(plain);
+  assert.doesNotMatch(api.renderArtworkPath("M0 0 L10 0", "#ffffff", 6), /data-rs-contour/);
+
+  const switchGroup = html.match(/<div class="rs-options-group rs-options-switch-group">([\s\S]*?)<\/div>\s*<div class="rs-options-group rs-options-dropdown-group">/)?.[1] || "";
+  assert.match(switchGroup, /for="contourToggle"/);
+  assert.ok(switchGroup.lastIndexOf('for="contourToggle"') > switchGroup.lastIndexOf('for="includeExportBackgroundToggle"'));
+  assert.match(html, /id="contourThicknessOption" hidden/);
+  assert.match(html, /id="contourColorOption"[^>]*hidden/);
+  assert.match(css, /#contourThicknessOption\[hidden\],[\s\S]*?#contourColorOption\[hidden\][\s\S]*?display:\s*none/);
+
+  const noContourWidth = api.crossoverClipHalfWidth(1.15, 3.5, plain);
+  state.advanced.strandModel = "standard";
   api.setState(state);
-  const complete = api.getReplicationModel();
-  assert.equal(complete.regions[0].startClosureBlend, 1);
-  assert.equal(complete.regions[0].endClosureBlend, 1);
-  assert.equal(api.minimalReplicationAt(api.VIEW.x0, complete).profile, 1);
-  assert.equal(api.minimalReplicationAt(api.VIEW.x1, complete).profile, 1);
+  const contourWidth = api.crossoverClipHalfWidth(1.15, 3.5, state);
+  assert.ok(contourWidth > noContourWidth, "crossover cutouts must clear the outer contour stroke");
+
+  state.advanced.crossoverGaps = false;
+  state.forkTravel = 0;
+  api.setState(state);
+  const bridgeMarkup = api.renderCrossoverOverpasses(
+    api.getReplicationModelAtTravel(state.forkTravel, state)
+  );
+  assert.match(bridgeMarkup, /data-rs-crossover-bridge="contour"/);
+  assert.match(bridgeMarkup, /data-rs-crossover-bridge="contour"[^>]*stroke-linecap="butt"/);
+  assert.match(bridgeMarkup, /data-rs-crossover-bridge="fill"[^>]*stroke-linecap="round"/);
+  assert.ok(
+    api.crossoverBridgeContourInset(state.weight, state) > 0,
+    "the contour bridge must end inside the coloured redraw to avoid transverse seams"
+  );
 });
 
-test("right-extending genomes fit their complete length into the reference viewport", () => {
-  const extended = freshState();
-  extended.length = 125;
-  extended.advanced.lengthMode = "extend";
-  api.setState(extended);
+test("animation completion produces a verified MP4 file or a browser-recognised download", async () => {
+  const blob = new Blob(["recognised-mp4"], { type: "video/mp4" });
+  let verified = false;
+  const handle = {
+    async createWritable() {
+      return {
+        async write(value) { assert.equal(value.type, "video/mp4"); },
+        async close() {},
+      };
+    },
+    async getFile() {
+      verified = true;
+      return new Blob(["recognised-mp4"], { type: "video/mp4" });
+    },
+  };
+  const inAppLink = {
+    hidden: true,
+    removeAttribute(name) { delete this[name]; },
+    click() { this.clicked = (this.clicked || 0) + 1; },
+  };
+  api.setElements({ videoSaveLink: inAppLink });
+  sandbox.URL = {
+    createObjectURL() { return "blob:recognised-replisketch-mp4"; },
+    revokeObjectURL() {},
+  };
+  assert.equal(await api.saveMp4Blob(blob, "animation.mp4", handle), "file");
+  assert.equal(verified, true);
 
-  const fit = api.fittedViewState(extended);
-  const expectedZoom = 1104 / api.moleculeWidthForState(extended);
-  assert.ok(Math.abs(fit.zoom - expectedZoom) < 1e-12);
-  const leftScreen = api.VIEW.width / 2 + fit.panX + (api.VIEW.x0 - api.VIEW.width / 2) * fit.zoom;
-  const rightScreen =
-    api.VIEW.width / 2 + fit.panX + (api.VIEW.x1 - api.VIEW.width / 2) * fit.zoom;
-  assert.ok(Math.abs(leftScreen - 48) < 1e-9);
-  assert.ok(Math.abs(rightScreen - 1152) < 1e-9);
-
-  const scaled = freshState();
-  scaled.length = 125;
-  scaled.advanced.lengthMode = "scale";
-  api.setState(scaled);
-  const scaledFit = api.fittedViewState(scaled);
-  assert.equal(scaledFit.zoom, 1);
-  assert.equal(scaledFit.panX, 0);
-  assert.equal(scaledFit.panY, 0);
-  assert.match(source, /viewState = fittedViewState\(state\)/);
-});
-
-test("right-extension keeps the preview grid at an exact fixed world spacing", () => {
-  const first = freshState();
-  first.length = 55;
-  first.advanced.lengthMode = "extend";
-  api.setState(first);
-  const referenceStep = 1104 / api.GRID_COLUMN_COUNT;
-  assert.ok(Math.abs(api.gridWorldStep(first) - referenceStep) < 1e-12);
-
-  const second = freshState();
-  second.length = 115;
-  second.advanced.lengthMode = "extend";
-  api.setState(second);
-  assert.ok(Math.abs(api.gridWorldStep(second) - referenceStep) < 1e-12);
-  assert.match(source, /VIEW\.x0 \+ gridWorldStep\(state\)/);
-  assert.match(source, /new columns simply continue to the right/);
-});
-
-test("geometry and advanced controls use the requested order, labels, and ranges", () => {
-  const geometry = html.match(/<h2>Geometry<\/h2>[\s\S]*?<\/section>/)?.[0] || "";
-  assert.match(geometry, /<span>Strand width<\/span>/);
-  assert.doesNotMatch(geometry, /Strand weight|lengthModeControl/);
-  assert.ok(geometry.indexOf('for="weightControl"') < geometry.indexOf('for="basePairWidthControl"'));
-  assert.match(geometry, /id="daughterSpacingControl"[^>]*max="800"/);
-  assert.match(geometry, /id="doubleStrandHeightControl"[^>]*max="160"/);
-
-  const advanced = html.match(/<details class="rs-options-menu" id="advancedOptions">[\s\S]*?<\/details>/)?.[0] || "";
-  assert.equal((advanced.match(/class="rs-options-group/g) || []).length, 4);
-  assert.match(advanced, /<label for="lengthModeControl">Genome resizing<\/label>/);
-  assert.ok(advanced.indexOf("lengthModeControl") < advanced.indexOf("basePairTransitionControl"));
-  assert.match(advanced, /Rescale chromosome/);
-  assert.match(advanced, /Extend right end/);
-
-  const rangeRule = css.match(/\.rs-options-range\s*\{[^}]*\}/)?.[0] || "";
-  const selectRule = css.match(/\.rs-options-select\s*\{[^}]*\}/)?.[0] || "";
-  assert.doesNotMatch(rangeRule, /border-top/);
-  assert.doesNotMatch(selectRule, /border-top/);
-  assert.match(css, /\.rs-options-group \+ \.rs-options-group\s*\{[^}]*border-top:/s);
-});
-
-test("vertical aspect now spans the wider symmetric range", () => {
-  assert.equal(api.aspectFactorFromSlider("y", -100), 0.1);
-  assert.equal(api.aspectFactorFromSlider("y", 0), 1);
-  assert.equal(api.aspectFactorFromSlider("y", 100), 10);
-  const low = freshState();
-  low.advanced.aspectY = 0.001;
-  api.normaliseStateSchema(low);
-  assert.equal(low.advanced.aspectY, 0.1);
-  const high = freshState();
-  high.advanced.aspectY = 100;
-  api.normaliseStateSchema(high);
-  assert.equal(high.advanced.aspectY, 10);
-});
-
-test("Menu About opens a centred blurred project dialog with attribution", () => {
-  const menu = html.match(/<div class="rs-project-menu-panel"[\s\S]*?<\/div>\s*<\/div>/)?.[0] || "";
-  assert.match(menu, /id="aboutMenuButton"/);
-  assert.match(menu, /aria-haspopup="dialog"/);
-  assert.match(menu, /aria-controls="aboutDialog"/);
-  assert.match(menu, /<span>About<\/span>/);
-
-  const about = html.match(/<div class="rs-about-overlay" id="aboutDialog"[\s\S]*?<\/section>\s*<\/div>/)?.[0] || "";
-  assert.match(about, /hidden aria-hidden="true"/);
-  assert.match(about, /assets\/img\/logo2\.png/);
-  assert.match(about, /browser-based visual studio/);
-  assert.match(about, /Francisco Berkemeier/);
-  assert.match(about, /mailto:fp409@cam\.ac\.uk/);
-  assert.match(css, /\.rs-about-overlay\s*\{[^}]*place-items:\s*center[^}]*backdrop-filter:\s*blur/s);
-  assert.match(source, /function openAboutDialog\(\)/);
-  assert.match(source, /function closeAboutDialog\(/);
-  assert.match(source, /elements\.aboutMenuButton\.addEventListener\("click", openAboutDialog\)/);
-  assert.match(source, /elements\.aboutMenuButton\?\.setAttribute\("aria-expanded", "true"\)/);
-  assert.match(source, /if \(event\.target === elements\.aboutDialog\) closeAboutDialog\(\)/);
+  const downloadLink = {
+    clicked: 0,
+    click() { this.clicked += 1; },
+  };
+  const downloadDocument = {
+    title: "",
+    body: { innerHTML: "", dataset: {} },
+    getElementById(id) {
+      assert.equal(id, "replisketch-video-download");
+      return downloadLink;
+    },
+  };
+  const downloadWindow = { closed: false, document: downloadDocument, opener: {} };
+  assert.equal(
+    api.saveMp4Blob(blob, "animation.mp4", null, downloadWindow),
+    "download"
+  );
+  assert.equal(downloadLink.href, "blob:recognised-replisketch-mp4");
+  assert.equal(downloadLink.download, "animation.mp4");
+  assert.equal(downloadLink.type, "video/mp4");
+  assert.equal(downloadLink.clicked, 0, "the browser download waits for a real trusted user click");
+  assert.equal(inAppLink.hidden, false, "the persistent Download MP4 link remains available");
+  assert.equal(inAppLink.type, "video/mp4");
+  assert.match(html, /id="videoReadyModal"[^>]*hidden/);
+  assert.match(html, /id="videoReadyDownloadButton"[^>]*type="video\/mp4"/);
+  assert.match(source, /openVideoReadyModal\(\{ savedToFile: true \}\)/);
+  assert.match(source, /destination\.downloadWindow/);
+  assert.match(source, /savedFile\.size !== mp4Blob\.size/);
 });

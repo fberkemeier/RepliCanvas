@@ -19,6 +19,8 @@
   const CONFIG_FORMAT = "RepliSketch";
   const CONFIG_SCHEMA_VERSION = 1;
   const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
+  const TEMPLATE_CACHE_KEY = "replisketch-template-v1";
+  const TEMPLATE_CACHE_DELAY_MS = 300;
   const HEX_COLOUR = /^#[\da-f]{6}$/i;
   const BASE_PAIRS_PER_TURN = 10;
   const BASE_PLAYBACK_SPEED = 2.75;
@@ -39,8 +41,9 @@
     terminalSmoothing: { min: 0, max: 6 },
     newDnaStartDistance: { min: 0, max: 20 },
     strandPhaseShift: { min: -5, max: 5 },
+    contourThickness: { min: 0.5, max: 10 },
     aspectX: { min: 0.1, max: 10 },
-    aspectY: { min: 0.1, max: 10 },
+    aspectY: { min: 0.1, max: 5 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
   const MAX_BASE_PAIR_COUNT = 500;
@@ -48,6 +51,7 @@
   const BASE_PAIR_COLOR_MODES = new Set(["single", "strand", "bases"]);
   const BASE_PAIR_TRANSITION_MODES = new Set(["fade", "grow", "instant"]);
   const LENGTH_MODES = new Set(["scale", "extend"]);
+  const DNA_HANDEDNESS_MODES = new Set(["right", "left"]);
   const BASE_PAIR_VARIANTS = Object.freeze([
     Object.freeze(["A", "T"]),
     Object.freeze(["T", "A"]),
@@ -136,9 +140,13 @@
       grid: true,
       alwaysShowControls: true,
       snapToBasePairs: false,
+      dnaHandedness: "left",
       basePairTransition: "fade",
       lengthMode: "scale",
       includeExportBackground: false,
+      contour: false,
+      contourThickness: 2,
+      contourColor: "#000000",
       newDnaStartDistance: 0,
       strandPhaseShift: 0,
       aspectX: 1,
@@ -162,8 +170,11 @@
   let hoverState = null;
   let modifierState = { shift: false, special: false };
   let themeMode = "system";
-  let artworkStrokeScale = 1;
   let aboutReturnFocus = null;
+  let videoReadyReturnFocus = null;
+  let templateCacheTimer = 0;
+  let templateCacheSuspended = false;
+  let artworkStrokeScale = 1;
   const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
@@ -231,6 +242,57 @@
     return `stroke-width="${fixed(baseWidth * artworkStrokeScale)}" data-rs-stroke-width="${fixed(
       baseWidth
     )}" vector-effect="non-scaling-stroke"`;
+  }
+
+  function contourStrokeWidth(baseWidth, sourceState = state) {
+    return Math.max(0, Number(baseWidth) || 0) + contourThickness(sourceState) * 2;
+  }
+
+  function renderArtworkPath(
+    path,
+    colour,
+    width,
+    { opacity = 1, linecap = "round", linejoin = "round", extra = "" } = {}
+  ) {
+    if (!path) return "";
+    const alpha = precise(clamp(Number(opacity) || 0, 0, 1));
+    const shared = `d="${path}" fill="none" stroke-linecap="${linecap}" stroke-linejoin="${linejoin}" opacity="${alpha}" ${extra}`;
+    const contour = contourEnabled()
+      ? `<path ${shared} stroke="${contourColor()}" ${artworkStrokeAttributes(
+          contourStrokeWidth(width)
+        )} data-rs-contour="true"/>`
+      : "";
+    return `${contour}<path ${shared} stroke="${colour}" ${artworkStrokeAttributes(width)}/>`;
+  }
+
+  function crossoverBridgeContourInset(width, sourceState = state) {
+    if (!contourEnabled(sourceState)) return 0;
+    const screenInset = contourThickness(sourceState) + Math.max(0.75, (Number(width) || 0) * 0.12);
+    return screenInset / Math.max(EPSILON, artworkScaleX(sourceState));
+  }
+
+  function renderCrossoverBridgePath(
+    path,
+    contourPath,
+    colour,
+    width,
+    { opacity = 1 } = {}
+  ) {
+    if (!path) return "";
+    if (!contourEnabled()) return renderArtworkPath(path, colour, width, { opacity });
+    const alpha = precise(clamp(Number(opacity) || 0, 0, 1));
+    const contour = contourPath
+      ? `<path d="${contourPath}" fill="none" stroke="${contourColor()}" ${artworkStrokeAttributes(
+          contourStrokeWidth(width)
+        )} data-rs-contour="true" data-rs-crossover-bridge="contour" stroke-linecap="butt" stroke-linejoin="round" opacity="${alpha}"/>`
+      : "";
+    // The coloured bridge extends beyond the shortened butt-capped contour.
+    // It therefore merges into the already-rendered strand without exposing
+    // the contour segment's end caps as dark transverse seams.
+    const fill = `<path d="${path}" fill="none" stroke="${colour}" ${artworkStrokeAttributes(
+      width
+    )} data-rs-crossover-bridge="fill" stroke-linecap="round" stroke-linejoin="round" opacity="${alpha}"/>`;
+    return `${contour}${fill}`;
   }
 
   function normaliseExportStrokeWidths(root) {
@@ -397,6 +459,20 @@
     return LENGTH_MODES.has(configured) ? configured : DEFAULTS.advanced.lengthMode;
   }
 
+  function dnaHandedness(sourceState = state) {
+    const configured = sourceState?.advanced?.dnaHandedness;
+    return DNA_HANDEDNESS_MODES.has(configured)
+      ? configured
+      : DEFAULTS.advanced.dnaHandedness;
+  }
+
+  function crossoverAIsOver(index, sourceState = state) {
+    const rightHandedAOver = Math.trunc(Number(index) || 0) % 2 === 0;
+    return dnaHandedness(sourceState) === "right"
+      ? rightHandedAOver
+      : !rightHandedAOver;
+  }
+
   function referenceCrossoverCount() {
     return Math.max(
       1,
@@ -425,16 +501,16 @@
 
   function gridColumnCount(sourceState = state) {
     if (lengthMode(sourceState) !== "extend") return GRID_COLUMN_COUNT;
-    const fixedStep = BASE_MOLECULE_WIDTH / GRID_COLUMN_COUNT;
-    return Math.max(1, Math.ceil(moleculeWidthForState(sourceState) / fixedStep - EPSILON));
-  }
-
-  function gridWorldStep(sourceState = state) {
-    // A right-extending genome adds columns without changing the existing grid.
-    // Scale-within-bar mode continues to derive the grid from the current bar.
-    return lengthMode(sourceState) === "extend"
-      ? BASE_MOLECULE_WIDTH / GRID_COLUMN_COUNT
-      : moleculeWidthForState(sourceState) / GRID_COLUMN_COUNT;
+    // In right-extension mode the existing grid must remain visually fixed as
+    // genome is appended. Returning the exact (possibly fractional) number of
+    // base-width columns keeps the CSS repeat spacing constant instead of
+    // nudging every line whenever the growing chromosome crosses a rounding
+    // threshold. The extended endpoint therefore need not coincide with a grid
+    // line; only scale-changing mode adapts the grid to the bar.
+    return Math.max(
+      EPSILON,
+      GRID_COLUMN_COUNT * moleculeWidthForState(sourceState) / BASE_MOLECULE_WIDTH
+    );
   }
 
   function resizeGenomeLength(value, sourceState = state) {
@@ -517,6 +593,25 @@
     return BASE_PAIR_TRANSITION_MODES.has(configured)
       ? configured
       : DEFAULTS.advanced.basePairTransition;
+  }
+
+  function contourEnabled(sourceState = state) {
+    return sourceState?.advanced?.contour === true;
+  }
+
+  function contourThickness(sourceState = state) {
+    return boundedControlValue(
+      "contourThickness",
+      sourceState?.advanced?.contourThickness,
+      DEFAULTS.advanced.contourThickness
+    );
+  }
+
+  function contourColor(sourceState = state) {
+    const configured = sourceState?.advanced?.contourColor;
+    return HEX_COLOUR.test(String(configured || ""))
+      ? configured
+      : DEFAULTS.advanced.contourColor;
   }
 
   function newDnaStartDistance(sourceState = state) {
@@ -662,9 +757,13 @@
     sourceState.advanced.grid = sourceState.advanced.grid !== false;
     sourceState.advanced.alwaysShowControls = sourceState.advanced.alwaysShowControls !== false;
     sourceState.advanced.snapToBasePairs = sourceState.advanced.snapToBasePairs === true;
+    sourceState.advanced.dnaHandedness = dnaHandedness(sourceState);
     sourceState.advanced.basePairTransition = basePairTransitionMode(sourceState);
     sourceState.advanced.lengthMode = lengthMode(sourceState);
     sourceState.advanced.includeExportBackground = sourceState.advanced.includeExportBackground === true;
+    sourceState.advanced.contour = sourceState.advanced.contour === true;
+    sourceState.advanced.contourThickness = contourThickness(sourceState);
+    sourceState.advanced.contourColor = contourColor(sourceState);
     sourceState.discreteAnimation = sourceState.discreteAnimation === true;
     sourceState.pairResolution = basePairResolution(sourceState);
     sourceState.length = boundedLengthValue(sourceState.length, sourceState);
@@ -731,6 +830,9 @@
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         if (key === "lengthMode" && !LENGTH_MODES.has(value)) {
+          throw invalidConfiguration(`${valuePath} is invalid`);
+        }
+        if (key === "dnaHandedness" && !DNA_HANDEDNESS_MODES.has(value)) {
           throw invalidConfiguration(`${valuePath} is invalid`);
         }
         result[key] = value;
@@ -852,6 +954,47 @@
     return sanitiseConfigurationState(documentState.state);
   }
 
+  function cachedTemplateState() {
+    try {
+      if (typeof localStorage === "undefined") return null;
+      const cached = localStorage.getItem(TEMPLATE_CACHE_KEY);
+      if (!cached) return null;
+      return parseConfigurationText(cached);
+    } catch {
+      try {
+        localStorage?.removeItem?.(TEMPLATE_CACHE_KEY);
+      } catch {
+        // A damaged or inaccessible cache must never prevent the app opening.
+      }
+      return null;
+    }
+  }
+
+  function persistTemplateCacheNow() {
+    if (!state || templateCacheSuspended) return false;
+    if (templateCacheTimer) {
+      clearTimeout(templateCacheTimer);
+      templateCacheTimer = 0;
+    }
+    try {
+      if (typeof localStorage === "undefined") return false;
+      localStorage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(configurationDocument()));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function scheduleTemplateCache() {
+    if (!state || templateCacheSuspended || templateCacheTimer || typeof setTimeout !== "function") return;
+    // Throttle rather than continually debounce: long S-phase playback and
+    // sustained drags are therefore checkpointed while remaining inexpensive.
+    templateCacheTimer = setTimeout(() => {
+      templateCacheTimer = 0;
+      persistTemplateCacheNow();
+    }, TEMPLATE_CACHE_DELAY_MS);
+  }
+
   function backgroundLuminance(sourceState = state) {
     const hex = canvasBackgroundColor(sourceState);
     const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
@@ -949,14 +1092,24 @@
   }
 
   function minimalEndClosureBlend(rawTravel, contactTravel, sourceState = state) {
-    // Chromosome ends follow the same post-contact rule as fork mergers: they
-    // first reach the centre line, then the two endpoint strands separate
-    // gradually according to Merge/end smoothing (or immediately for Snap).
     if (rawTravel < contactTravel - EPSILON) return 0;
     if (strandModel(sourceState) !== "minimal") return 1;
     const overshoot =
       Math.max(0, rawTravel - contactTravel) * moleculeWidthForState(sourceState);
     return terminalClosureBlend(overshoot, sourceState);
+  }
+
+  function minimalManualEndOvershootFraction(sourceState = state) {
+    if (
+      strandModel(sourceState) !== "minimal" ||
+      terminalSmoothing(sourceState) <= EPSILON
+    ) {
+      return 0;
+    }
+    return (
+      terminalPullSpan(0.5, "right", sourceState) /
+      Math.max(EPSILON, moleculeWidthForState(sourceState))
+    );
   }
 
   function minimalMergeClosureMetrics(leftOrigin, rightOrigin, travel, sourceState = state) {
@@ -1889,10 +2042,17 @@
       Number(sourceState?.length) || DEFAULTS.length
     );
     const lengthScale = CROSSOVER_REFERENCE_LENGTH / configuredLength;
-    const nominalScreenHalfWidth = Math.max(minimum, sourceState.weight * multiplier) * lengthScale;
+    // A contour is an outer stroke, so crossover cutouts and replacement
+    // overpasses must clear its full visible width rather than only the inner
+    // strand. This prevents the outline of the underpassing strand leaking
+    // through at a crossover in either handedness.
+    const visibleStrandWidth = contourEnabled(sourceState)
+      ? contourStrokeWidth(sourceState.weight, sourceState)
+      : sourceState.weight;
+    const nominalScreenHalfWidth = Math.max(minimum, visibleStrandWidth * multiplier) * lengthScale;
     const crossoverSpacingScreen = (VIEW.moleculeWidth / crossoverCount(sourceState)) * aspect;
     const spacingLimitedHalfWidth = crossoverSpacingScreen * 0.42;
-    const strandSafeHalfWidth = sourceState.weight / 2 + 0.5;
+    const strandSafeHalfWidth = visibleStrandWidth / 2 + 0.5;
     const screenHalfWidth = Math.max(
       strandSafeHalfWidth,
       Math.min(nominalScreenHalfWidth, spacingLimitedHalfWidth)
@@ -1914,19 +2074,19 @@
     const crossover = crossoverNear(x);
     if (!crossover) return false;
     const replication = replicationAt(crossover.x, model);
-    const even = crossover.index % 2 === 0;
+    const aIsOver = crossoverAIsOver(crossover.index);
 
     if (!replication.region || replication.profile < NASCENT_PROFILE_THRESHOLD) {
-      if (strand === "a") return !even;
-      if (strand === "b") return even;
+      if (strand === "a") return !aIsOver;
+      if (strand === "b") return aIsOver;
       return false;
     }
 
     if (!state.layers.newDna) return false;
-    if (strand === "a") return !even;
-    if (strand === "top") return even;
-    if (strand === "b") return even;
-    if (strand === "bottom") return !even;
+    if (strand === "a") return !aIsOver;
+    if (strand === "top") return aIsOver;
+    if (strand === "b") return aIsOver;
+    if (strand === "bottom") return !aIsOver;
     return false;
   }
 
@@ -2598,39 +2758,118 @@
     );
     const width = state.basePairWidth;
     const strokeAttributes = artworkStrokeAttributes(width);
+    const contourAttributes = artworkStrokeAttributes(contourStrokeWidth(width));
     const midpoint = (segment.firstY + segment.secondY) / 2;
     const firstInnerY = segment.firstY + (midpoint - segment.firstY) * growth;
     const secondInnerY = segment.secondY + (midpoint - segment.secondY) * growth;
     const direction = Math.sign(segment.secondY - segment.firstY) || 1;
     const capNudge = 0.001 * direction;
+    const xValue = fixed(x);
+    const contourColour = contourColor();
+    const contourOn = contourEnabled();
+
+    const line = (
+      fromY,
+      toY,
+      colour,
+      attributes,
+      cap,
+      { beforeCoordinates = "", afterCoordinates = "" } = {}
+    ) =>
+      `<line ${beforeCoordinates}x1="${xValue}" y1="${precise(fromY)}" x2="${xValue}" y2="${precise(
+        toY
+      )}" ${afterCoordinates}stroke="${colour}" ${attributes} stroke-linecap="${cap}"/>`;
 
     if (!grows && firstColor === secondColor) {
-      return `<line x1="${fixed(x)}" y1="${precise(
-        segment.firstY
-      )}" x2="${fixed(x)}" y2="${precise(
-        segment.secondY
-      )}" data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" stroke="${firstColor}" ${strokeAttributes} opacity="${precise(
+      const contour = contourOn
+        ? line(
+            segment.firstY,
+            segment.secondY,
+            contourColour,
+            contourAttributes,
+            "round",
+            { beforeCoordinates: 'data-rs-contour="true" ' }
+          )
+        : "";
+      return `<g data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" opacity="${precise(
         pairOpacity
-      )}" stroke-linecap="round"/>`;
+      )}">${contour}${line(
+        segment.firstY,
+        segment.secondY,
+        firstColor,
+        strokeAttributes,
+        "round"
+      )}</g>`;
     }
 
-    // Draw each half from its connected strand towards the midpoint. Butt caps
-    // preserve an exact, flat colour boundary where the halves meet. Separate
-    // zero-length round-capped strokes restore rounded outer ends while keeping
-    // stroke thickness independent of horizontal or vertical aspect scaling.
-    return `<g data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" opacity="${precise(pairOpacity)}">
-      <line x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(x)}" y2="${precise(
-        firstInnerY
-      )}" data-half="first" stroke="${firstColor}" ${strokeAttributes} stroke-linecap="butt"/>
-      <line x1="${fixed(x)}" y1="${precise(secondInnerY)}" x2="${fixed(x)}" y2="${precise(
-        segment.secondY
-      )}" data-half="second" stroke="${secondColor}" ${strokeAttributes} stroke-linecap="butt"/>
-      <line data-cap="first" x1="${fixed(x)}" y1="${precise(segment.firstY)}" x2="${fixed(
-        x
-      )}" y2="${precise(segment.firstY + capNudge)}" stroke="${firstColor}" ${strokeAttributes} stroke-linecap="round"/>
-      <line data-cap="second" x1="${fixed(x)}" y1="${precise(segment.secondY)}" x2="${fixed(
-        x
-      )}" y2="${precise(segment.secondY - capNudge)}" stroke="${secondColor}" ${strokeAttributes} stroke-linecap="round"/>
+    const completeJoin = growth >= 1 - EPSILON;
+    let contour = "";
+    if (contourOn) {
+      if (completeJoin) {
+        contour = line(
+          segment.firstY,
+          segment.secondY,
+          contourColour,
+          contourAttributes,
+          "round",
+          { beforeCoordinates: 'data-rs-contour="true" ' }
+        );
+      } else {
+        // While the two halves are growing, keep the outer ends rounded but
+        // the advancing fronts flat. Once they meet, replace both halves with
+        // one continuous contour so no dark seam or circular bulge appears at
+        // the colour boundary.
+        contour = `${line(
+          segment.firstY,
+          firstInnerY,
+          contourColour,
+          contourAttributes,
+          "butt",
+          { beforeCoordinates: 'data-rs-contour="true" data-contour-half="first" ' }
+        )}${line(
+          secondInnerY,
+          segment.secondY,
+          contourColour,
+          contourAttributes,
+          "butt",
+          { beforeCoordinates: 'data-rs-contour="true" data-contour-half="second" ' }
+        )}${line(
+          segment.firstY,
+          segment.firstY + capNudge,
+          contourColour,
+          contourAttributes,
+          "round",
+          { beforeCoordinates: 'data-rs-contour="true" data-contour-cap="first" ' }
+        )}${line(
+          segment.secondY,
+          segment.secondY - capNudge,
+          contourColour,
+          contourAttributes,
+          "round",
+          { beforeCoordinates: 'data-rs-contour="true" data-contour-cap="second" ' }
+        )}`;
+      }
+    }
+
+    // Draw each coloured half from its connected strand towards the midpoint.
+    // Butt caps preserve an exact, flat colour boundary where the halves meet;
+    // separate zero-length round-capped strokes restore rounded outer ends.
+    return `<g data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" opacity="${precise(
+      pairOpacity
+    )}">
+      ${contour}
+      ${line(segment.firstY, firstInnerY, firstColor, strokeAttributes, "butt", {
+        afterCoordinates: 'data-half="first" ',
+      })}
+      ${line(secondInnerY, segment.secondY, secondColor, strokeAttributes, "butt", {
+        afterCoordinates: 'data-half="second" ',
+      })}
+      ${line(segment.firstY, segment.firstY + capNudge, firstColor, strokeAttributes, "round", {
+        beforeCoordinates: 'data-cap="first" ',
+      })}
+      ${line(segment.secondY, segment.secondY - capNudge, secondColor, strokeAttributes, "round", {
+        beforeCoordinates: 'data-cap="second" ',
+      })}
     </g>`;
   }
 
@@ -2734,11 +2973,10 @@
         (x) => numericalPathTangent(bottomYForX, x, fromX, toX)
       );
       const width = Math.max(2, state.weight * 0.9);
-      const strokeAttributes = artworkStrokeAttributes(width);
-      const opacity = precise(smoothstep(spanWidth / 18));
+      const opacity = smoothstep(spanWidth / 18);
       strands.push(
-        `<path d="${topPath}" fill="none" stroke="${stateArtworkColour("newDna")}" ${strokeAttributes} stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`,
-        `<path d="${bottomPath}" fill="none" stroke="${stateArtworkColour("newDna")}" ${strokeAttributes} stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"/>`
+        renderArtworkPath(topPath, stateArtworkColour("newDna"), width, { opacity }),
+        renderArtworkPath(bottomPath, stateArtworkColour("newDna"), width, { opacity })
       );
     });
 
@@ -2756,47 +2994,79 @@
       const fromX = Math.max(VIEW.x0, x - halfWidth);
       const toX = Math.min(VIEW.x1, x + halfWidth);
       const nascent = strand === "top" || strand === "bottom";
+      const width = strand === "a" || strand === "b" ? state.weight : Math.max(2, state.weight * 0.9);
       const yForX = nascent
         ? (sampleX) => nascentY(sampleX, strand, model)
         : (sampleX) => templateY(sampleX, strand, model);
+      const extraGapForX = nascent
+        ? (sampleX) => {
+            const replication = replicationAt(sampleX, model);
+            return !newDnaVisibleAt(sampleX, replication, model);
+          }
+        : null;
+      const tangentForX = (sampleX) =>
+        numericalPathTangent(yForX, sampleX, VIEW.x0, VIEW.x1);
       const path = sampledPath(
         fromX,
         toX,
         yForX,
         3,
-        nascent
-          ? (sampleX) => {
-              const replication = replicationAt(sampleX, model);
-              return !newDnaVisibleAt(sampleX, replication, model);
-            }
-          : null,
+        extraGapForX,
         sampling.anchorXs,
         sampling.localWindows,
-        (sampleX) => numericalPathTangent(yForX, sampleX, VIEW.x0, VIEW.x1)
+        tangentForX
       );
       if (!path) return;
-      const width = strand === "a" || strand === "b" ? state.weight : Math.max(2, state.weight * 0.9);
-      overpasses.push(
-        `<path d="${path}" fill="none" stroke="${color}" ${artworkStrokeAttributes(
-          width
-        )} stroke-linecap="round" stroke-linejoin="round" opacity="${precise(opacity)}"/>`
-      );
+
+      let contourPath = path;
+      if (contourEnabled()) {
+        const availableWidth = Math.max(0, toX - fromX);
+        const inset = Math.min(availableWidth * 0.24, crossoverBridgeContourInset(width));
+        const contourFromX = fromX + inset;
+        const contourToX = toX - inset;
+        contourPath = contourToX - contourFromX > EPSILON
+          ? sampledPath(
+              contourFromX,
+              contourToX,
+              yForX,
+              3,
+              extraGapForX,
+              sampling.anchorXs,
+              sampling.localWindows,
+              tangentForX
+            )
+          : path;
+      }
+      overpasses.push(renderCrossoverBridgePath(path, contourPath, color, width, { opacity }));
     };
 
     crossoverSites().forEach(({ index, x }) => {
       const replication = replicationAt(x, model);
-      const even = index % 2 === 0;
+      const aIsOver = crossoverAIsOver(index);
 
       if (!replication.region || !state.layers.newDna) {
-        addOverpass(x, even ? "a" : "b", even ? stateArtworkColour("templateA") : stateArtworkColour("templateB"));
+        addOverpass(
+          x,
+          aIsOver ? "a" : "b",
+          aIsOver ? stateArtworkColour("templateA") : stateArtworkColour("templateB")
+        );
         return;
       }
 
       const daughterMix = newDnaVisibleAt(x, replication, model)
         ? daughterDetailFade(replication.profile)
         : 0;
-      addOverpass(x, even ? "a" : "b", even ? stateArtworkColour("templateA") : stateArtworkColour("templateB"));
-      addOverpass(x, even ? "bottom" : "top", stateArtworkColour("newDna"), daughterMix);
+      addOverpass(
+        x,
+        aIsOver ? "a" : "b",
+        aIsOver ? stateArtworkColour("templateA") : stateArtworkColour("templateB")
+      );
+      addOverpass(
+        x,
+        aIsOver ? "bottom" : "top",
+        stateArtworkColour("newDna"),
+        daughterMix
+      );
     });
 
     return `<g aria-label="Alternating strand overpasses">${overpasses.join("")}</g>`;
@@ -3104,11 +3374,12 @@
     const originX = bounds.left + frame.clientLeft;
     const originY = bounds.top + frame.clientTop;
     const anchor = transformedSvgPoint(VIEW.x0, VIEW.centerY, matrix);
-    // Scale-within-bar mode keeps the grid tied to the bar endpoints. In
-    // right-extension mode the original grid spacing remains exactly fixed and
-    // new columns simply continue to the right with the added genome.
+    // A fixed genomic column count keeps the grid independent of base-pair
+    // resolution while guaranteeing lines through both ruler endpoints. For
+    // odd resolutions, those endpoints are also base-pair lattice sites.
+    const columns = gridColumnCount(state);
     const xStep = transformedSvgPoint(
-      VIEW.x0 + gridWorldStep(state),
+      VIEW.x0 + VIEW.moleculeWidth / columns,
       VIEW.centerY,
       matrix
     );
@@ -3197,7 +3468,12 @@
     elements.canvasLegend.innerHTML = state.layers.labels
       ? items
           .map(
-            ([color, label]) => `<span class="rs-legend-item"><span class="rs-legend-swatch" style="background:${color}"></span>${label}</span>`
+            ([color, label]) => {
+              const contourStyle = contourEnabled()
+                ? `;box-shadow:0 0 0 ${fixed(Math.min(3, contourThickness()))}px ${contourColor()}`
+                : "";
+              return `<span class="rs-legend-item"><span class="rs-legend-swatch" style="background:${color}${contourStyle}"></span>${label}</span>`;
+            }
           )
           .join("")
       : "";
@@ -3246,12 +3522,8 @@
     );
 
     return `${renderBasePairs(model)}
-      <path d="${pathA}" fill="none" stroke="${stateArtworkColour("templateA")}" ${artworkStrokeAttributes(
-        state.weight
-      )} stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="${pathB}" fill="none" stroke="${stateArtworkColour("templateB")}" ${artworkStrokeAttributes(
-        state.weight
-      )} stroke-linecap="round" stroke-linejoin="round"/>
+      ${renderArtworkPath(pathA, stateArtworkColour("templateA"), state.weight)}
+      ${renderArtworkPath(pathB, stateArtworkColour("templateB"), state.weight)}
       ${renderNascentDna(model)}
       ${renderCrossoverOverpasses(model)}`;
   }
@@ -3374,6 +3646,7 @@
     updateGrid();
     updateChromosomeRuler();
     refreshContextAction();
+    scheduleTemplateCache();
     return model;
   }
 
@@ -3400,6 +3673,9 @@
     if (elements.terminalSmoothingOutput) {
       elements.terminalSmoothingOutput.textContent = terminalSmoothingLabel();
     }
+    if (elements.contourThicknessOutput) {
+      elements.contourThicknessOutput.textContent = `${Number(contourThickness().toFixed(1))} px`;
+    }
     elements.speedOutput.textContent = speedMultiplierLabel();
     elements.zoomOutput.textContent = `${Math.round(viewState.zoom * 100)}%`;
     elements.lengthStat.textContent = `${basePairCount()} bp`;
@@ -3421,6 +3697,7 @@
     const pairMode = basePairColorMode();
     if (elements.modelControl) elements.modelControl.value = modelName;
     if (elements.lengthModeControl) elements.lengthModeControl.value = lengthMode();
+    if (elements.dnaHandednessControl) elements.dnaHandednessControl.value = dnaHandedness();
     elements.lengthControl.max = maximumLengthForBasePairCount(state);
     elements.lengthControl.value = state.length;
     elements.progressControl.value = state.progress;
@@ -3463,6 +3740,13 @@
     elements.alwaysShowControlsToggle.checked = state.advanced.alwaysShowControls;
     elements.snapToBasePairsToggle.checked = snapEditingEnabled();
     elements.includeExportBackgroundToggle.checked = state.advanced.includeExportBackground;
+    elements.contourToggle.checked = contourEnabled();
+    elements.contourThicknessControl.value = contourThickness();
+    elements.contourColorControl.value = contourColor();
+    elements.contourThicknessOption.hidden = !contourEnabled();
+    elements.contourColorOption.hidden = !contourEnabled();
+    elements.contourThicknessControl.disabled = !contourEnabled();
+    elements.contourColorControl.disabled = !contourEnabled();
     elements.discreteAnimationToggle.checked = discreteAnimationEnabled();
     elements.aspectXControl.value = Math.round(aspectSliderValue("x"));
     elements.aspectYControl.value = Math.round(aspectSliderValue("y"));
@@ -3480,6 +3764,7 @@
     );
     elements.newDnaColor.disabled = modelName === "minimal";
     elements.crossoverGapsToggle.disabled = modelName !== "standard";
+    elements.dnaHandednessControl.disabled = modelName !== "standard";
     elements.newDnaStartDistanceControl.disabled = modelName === "minimal";
     elements.strandPhaseShiftControl.disabled = modelName !== "standard";
     updatePlayButton();
@@ -3650,17 +3935,47 @@
   }
 
   function fittedViewState(sourceState = state) {
-    if (lengthMode(sourceState) !== "extend") {
-      return { zoom: 1, panX: 0, panY: 0 };
-    }
+    syncViewGeometry(sourceState);
+    // Fit the transformed chromosome rather than only its unscaled genomic
+    // coordinates. This restores cached templates with their aspect settings
+    // intact while ensuring the complete artwork is visible on every launch.
+    const leftPoint = transformedArtworkPoint(VIEW.x0, VIEW.centerY, sourceState);
+    const rightPoint = transformedArtworkPoint(VIEW.x1, VIEW.centerY, sourceState);
+    const sourceLeft = Math.min(leftPoint.x, rightPoint.x);
+    const sourceRight = Math.max(leftPoint.x, rightPoint.x);
+    const sourceWidth = Math.max(EPSILON, sourceRight - sourceLeft);
+    const targetLeft = BASE_VIEW.x0;
+    const targetRight = BASE_VIEW.x1;
+    const targetWidth = targetRight - targetLeft;
 
-    const genomeWidth = Math.max(EPSILON, moleculeWidthForState(sourceState));
-    const zoom = clamp(BASE_MOLECULE_WIDTH / genomeWidth, MIN_ZOOM, MAX_ZOOM);
-    const genomeCenterX = BASE_VIEW.x0 + genomeWidth / 2;
+    const verticalExtent =
+      sourceState.daughterSpacing / 2 +
+      doubleStrandHalfHeight(sourceState) +
+      Math.max(sourceState.weight, sourceState.basePairWidth) +
+      (contourEnabled(sourceState) ? contourThickness(sourceState) : 0) +
+      32;
+    const topPoint = transformedArtworkPoint(VIEW.width / 2, VIEW.centerY - verticalExtent, sourceState);
+    const bottomPoint = transformedArtworkPoint(VIEW.width / 2, VIEW.centerY + verticalExtent, sourceState);
+    const sourceTop = Math.min(topPoint.y, bottomPoint.y);
+    const sourceBottom = Math.max(topPoint.y, bottomPoint.y);
+    const sourceHeight = Math.max(EPSILON, sourceBottom - sourceTop);
+    const targetTop = 52;
+    const targetBottom = BASE_VIEW.height - 72;
+    const targetHeight = targetBottom - targetTop;
+
+    const zoom = clamp(
+      Math.min(1, targetWidth / sourceWidth, targetHeight / sourceHeight),
+      MIN_ZOOM,
+      1
+    );
+    const sourceCenterX = (sourceLeft + sourceRight) / 2;
+    const sourceCenterY = (sourceTop + sourceBottom) / 2;
+    const targetCenterX = (targetLeft + targetRight) / 2;
+    const targetCenterY = (targetTop + targetBottom) / 2;
     return {
       zoom,
-      panX: -zoom * (genomeCenterX - BASE_VIEW.width / 2),
-      panY: 0,
+      panX: targetCenterX - VIEW.width / 2 - (sourceCenterX - VIEW.width / 2) * zoom,
+      panY: targetCenterY - VIEW.centerY - (sourceCenterY - VIEW.centerY) * zoom,
     };
   }
 
@@ -3670,11 +3985,10 @@
     if (aspectChanged) pushSnapshot();
     state.advanced.aspectX = 1;
     state.advanced.aspectY = 1;
-    syncViewGeometry(state);
     viewState = fittedViewState(state);
     syncControls();
     render();
-    setStatus(lengthMode(state) === "extend" ? "Genome fitted to view" : "View and aspect reset");
+    setStatus(lengthMode() === "extend" ? "Genome fitted to view" : "View and aspect reset");
   }
 
   function setArtworkAspectFromSlider(axis, sliderValue) {
@@ -4068,6 +4382,15 @@
     return crossedBoundary || screenDistance <= FORK_COLLAPSE_PX;
   }
 
+  function manualForkMergeTolerance(sourceState = state) {
+    if (strandModel(sourceState) !== "minimal") return RAW_BUBBLE_MERGE_EPSILON;
+    const renderedWidth =
+      Math.max(EPSILON, VIEW.moleculeWidth) *
+      Math.max(EPSILON, viewState.zoom) *
+      Math.max(EPSILON, artworkScaleX(sourceState));
+    return Math.max(RAW_BUBBLE_MERGE_EPSILON, FORK_COLLAPSE_PX / renderedWidth);
+  }
+
   function applyForkDragPosition(activeDrag, pointerPosition, sourceState = state) {
     if (activeDrag?.role !== "fork" || !["left", "right"].includes(activeDrag.side)) return null;
     const origin = sourceState.origins.find((item) => item.id === activeDrag.originId);
@@ -4116,6 +4439,11 @@
       origin.position = center;
       origin.leftOffset = halfWidth - globalTravel;
       origin.rightOffset = halfWidth - globalTravel;
+      if (!collapsePending) {
+        const endOvershoot = minimalManualEndOvershootFraction(sourceState);
+        if (leftPosition <= EPSILON) origin.leftOffset += endOvershoot;
+        if (rightPosition >= 1 - EPSILON) origin.rightOffset += endOvershoot;
+      }
       movingPosition = activeDrag.side === "left" ? leftPosition : rightPosition;
     } else if (Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary)) {
       collapsePending = forkReachedChromosomeEnd(desiredPosition, completionBoundary);
@@ -4136,8 +4464,16 @@
       activeDrag.terminalReplicatedBoundary = replicatedBoundary;
     } else if (activeDrag.pairedForks) {
       const oppositePosition = activeDrag.side === "left" ? activeDrag.rightPosition : activeDrag.leftPosition;
-      collapsePending = forksShouldCollapse(activeDrag.side, desiredPosition, oppositePosition);
-      if (collapsePending) {
+      const ownEndBoundary = activeDrag.side === "left" ? 0 : 1;
+      const reachedOwnEnd = forkReachedChromosomeEnd(desiredPosition, ownEndBoundary);
+      collapsePending = !reachedOwnEnd && forksShouldCollapse(
+        activeDrag.side,
+        desiredPosition,
+        oppositePosition
+      );
+      if (reachedOwnEnd) {
+        movingPosition = ownEndBoundary;
+      } else if (collapsePending) {
         movingPosition = oppositePosition;
       } else {
         const minimum = activeDrag.side === "left" ? 0 : oppositePosition;
@@ -4168,18 +4504,40 @@
         origin.leftOffset = halfWidth - globalTravel;
         origin.rightOffset = halfWidth - globalTravel;
       }
+      if (reachedOwnEnd && !collapsePending) {
+        const endOvershoot = minimalManualEndOvershootFraction(sourceState);
+        if (activeDrag.side === "left") origin.leftOffset += endOvershoot;
+        else origin.rightOffset += endOvershoot;
+        activeDrag.manualEndClosure = true;
+      }
     } else if (activeDrag.side === "left" && geometry.leftActive) {
-      movingPosition = snapEditingEnabled(sourceState)
-        ? snapFractionToBasePair(desiredPosition, sourceState, { min: 0, max: geometry.startPosition })
-        : clamp(desiredPosition, 0, geometry.startPosition);
+      const reachedEnd = forkReachedChromosomeEnd(desiredPosition, 0);
+      movingPosition = reachedEnd
+        ? 0
+        : snapEditingEnabled(sourceState)
+          ? snapFractionToBasePair(desiredPosition, sourceState, { min: 0, max: geometry.startPosition })
+          : clamp(desiredPosition, 0, geometry.startPosition);
       if (movingPosition === null) return null;
-      origin.leftOffset = geometry.startPosition - movingPosition - globalTravel;
+      // Minimal lines separate only after physical contact. A manual drag cannot
+      // travel beyond a chromosome boundary, so encode the complete post-contact
+      // pull when the handle reaches that boundary; this makes the end open in
+      // the same gesture used by the other visual models.
+      const closureOvershoot = reachedEnd ? minimalManualEndOvershootFraction(sourceState) : 0;
+      origin.leftOffset =
+        geometry.startPosition - movingPosition + closureOvershoot - globalTravel;
+      activeDrag.openedTerminal = reachedEnd;
     } else if (activeDrag.side === "right" && geometry.rightActive) {
-      movingPosition = snapEditingEnabled(sourceState)
-        ? snapFractionToBasePair(desiredPosition, sourceState, { min: geometry.startPosition, max: 1 })
-        : clamp(desiredPosition, geometry.startPosition, 1);
+      const reachedEnd = forkReachedChromosomeEnd(desiredPosition, 1);
+      movingPosition = reachedEnd
+        ? 1
+        : snapEditingEnabled(sourceState)
+          ? snapFractionToBasePair(desiredPosition, sourceState, { min: geometry.startPosition, max: 1 })
+          : clamp(desiredPosition, geometry.startPosition, 1);
       if (movingPosition === null) return null;
-      origin.rightOffset = movingPosition - geometry.startPosition - globalTravel;
+      const closureOvershoot = reachedEnd ? minimalManualEndOvershootFraction(sourceState) : 0;
+      origin.rightOffset =
+        movingPosition - geometry.startPosition + closureOvershoot - globalTravel;
+      activeDrag.openedTerminal = reachedEnd;
     } else {
       return null;
     }
@@ -4195,11 +4553,12 @@
       collapsePending,
       mirrored: Boolean(activeDrag.mirroredForks && activeDrag.pairedForks),
       terminalClosure: Number.isFinite(completionBoundary) && Number.isFinite(replicatedBoundary),
+      openedTerminal: activeDrag.openedTerminal === true,
     };
   }
 
-  function mergeTouchingBubbles(originId) {
-    const result = mergeOverlappingBubbleState(originId);
+  function mergeTouchingBubbles(originId, contactTolerance = RAW_BUBBLE_MERGE_EPSILON) {
+    const result = mergeOverlappingBubbleState(originId, state, contactTolerance);
     if (!result) return false;
     syncControls();
     return true;
@@ -4743,10 +5102,14 @@
         syncControls();
       }
     }
+    const mergeTolerance =
+      completedDrag.role === "fork"
+        ? manualForkMergeTolerance(state)
+        : RAW_BUBBLE_MERGE_EPSILON;
     const merged =
       !collapsed &&
       shouldMergeCompletedBubbleDrag(completedDrag, event.type) &&
-      mergeTouchingBubbles(completedDrag.originId);
+      mergeTouchingBubbles(completedDrag.originId, mergeTolerance);
     render();
     if (collapsed) {
       setStatus(
@@ -4852,10 +5215,13 @@
       height: halfHeight * 2,
     };
     const bounds = measured && measured.width > 0 && measured.height > 0 ? measured : fallback;
-    const x = bounds.x - EXPORT_PADDING;
-    const y = bounds.y - EXPORT_PADDING;
-    const width = Math.max(1, bounds.width + EXPORT_PADDING * 2);
-    const height = Math.max(1, bounds.height + EXPORT_PADDING * 2);
+    const strokeRadius = Math.max(state.weight, state.basePairWidth) / 2 +
+      (contourEnabled() ? contourThickness() : 0);
+    const exportPadding = Math.max(EXPORT_PADDING, strokeRadius + 2);
+    const x = bounds.x - exportPadding;
+    const y = bounds.y - exportPadding;
+    const width = Math.max(1, bounds.width + exportPadding * 2);
+    const height = Math.max(1, bounds.height + exportPadding * 2);
     const svg = document.createElementNS(namespace, "svg");
     const title = document.createElementNS(namespace, "title");
     title.textContent = "DNA replication diagram created with RepliSketch";
@@ -5094,7 +5460,8 @@
   function fixedVideoSvgSource(videoState, forkTravel) {
     return withVideoRenderState(videoState, () => {
       const model = getReplicationModelAtTravel(forkTravel, videoState);
-      const maxStroke = Math.max(videoState.weight, videoState.basePairWidth);
+      const maxStroke = Math.max(videoState.weight, videoState.basePairWidth) +
+        (contourEnabled(videoState) ? contourThickness(videoState) * 2 : 0);
       const contentHalfExtent = Math.max(
         80,
         videoState.daughterSpacing / 2 + doubleStrandHalfHeight(videoState) + maxStroke
@@ -5161,29 +5528,91 @@
   }
 
   function clearReadyVideoDownload() {
+    closeVideoReadyModal({ restoreFocus: false });
     if (videoDownloadUrl) URL.revokeObjectURL(videoDownloadUrl);
     videoDownloadUrl = "";
     elements.videoSaveLink.hidden = true;
     elements.videoSaveLink.removeAttribute("href");
     elements.videoSaveLink.removeAttribute("download");
+    elements.videoSaveLink.removeAttribute("type");
+    elements.videoReadyDownloadButton?.removeAttribute?.("href");
+    elements.videoReadyDownloadButton?.removeAttribute?.("download");
   }
 
-  function publishVideoDownload(blob, filename) {
+  function normaliseMp4Blob(blob) {
+    if (!(blob instanceof Blob) || blob.size <= 0) {
+      throw new Error("The MP4 encoder returned an empty file");
+    }
+    return blob.type === "video/mp4"
+      ? blob
+      : new Blob([blob], { type: "video/mp4" });
+  }
+
+  function prepareAnimationDownloadWindow(filename) {
+    if (typeof window?.open !== "function") return null;
+    const downloadWindow = window.open("", "_blank");
+    if (!downloadWindow) return null;
+    try {
+      downloadWindow.opener = null;
+      downloadWindow.document.title = "Generating RepliSketch animation";
+      downloadWindow.document.body.innerHTML =
+        '<main style="font:14px system-ui,sans-serif;padding:28px;line-height:1.5">' +
+        '<strong>Generating animation…</strong>' +
+        '<p>This page will offer the MP4 download when encoding is complete.</p>' +
+        '</main>';
+      downloadWindow.document.body.dataset.filename = filename;
+    } catch {
+      // The user-authorised window is still useful as a download target even
+      // when the browser restricts early document customisation.
+    }
+    return downloadWindow;
+  }
+
+  function publishVideoDownload(blob, filename, downloadWindow = null) {
+    const mp4Blob = normaliseMp4Blob(blob);
     clearReadyVideoDownload();
-    videoDownloadUrl = URL.createObjectURL(blob);
+    videoDownloadUrl = URL.createObjectURL(mp4Blob);
     elements.videoSaveLink.href = videoDownloadUrl;
     elements.videoSaveLink.download = filename;
+    elements.videoSaveLink.type = "video/mp4";
     elements.videoSaveLink.hidden = false;
-    try {
-      elements.videoSaveLink.click();
-    } catch {
-      // The persistent link remains available for a trusted user click.
+    if (elements.videoReadyDownloadButton) {
+      elements.videoReadyDownloadButton.href = videoDownloadUrl;
+      elements.videoReadyDownloadButton.download = filename;
+      elements.videoReadyDownloadButton.type = "video/mp4";
     }
+
+    if (downloadWindow && !downloadWindow.closed) {
+      try {
+        const doc = downloadWindow.document;
+        doc.title = "RepliSketch MP4 ready";
+        doc.body.innerHTML =
+          '<main style="font:14px system-ui,sans-serif;padding:28px;line-height:1.5;max-width:520px">' +
+          '<strong>Your RepliSketch animation is ready.</strong>' +
+          '<p>Select the button below to complete a browser-recognised download.</p>' +
+          '<p><a id="replisketch-video-download" style="display:inline-block;padding:9px 15px;border-radius:7px;background:#067e94;color:white;text-decoration:none;font-weight:700">Download MP4</a></p>' +
+          '<p style="opacity:.65">You may close this tab after the download begins.</p>' +
+          '</main>';
+        const link = doc.getElementById("replisketch-video-download");
+        link.href = videoDownloadUrl;
+        link.download = filename;
+        link.type = "video/mp4";
+        link.rel = "noopener";
+      } catch {
+        // The in-app completion dialog remains available for a trusted click.
+      }
+    }
+    return true;
   }
 
   async function requestAnimationSaveHandle(filename) {
     if (typeof window?.showSaveFilePicker !== "function") {
-      return { handle: null, cancelled: false, supported: false };
+      return {
+        handle: null,
+        cancelled: false,
+        supported: false,
+        downloadWindow: prepareAnimationDownloadWindow(filename),
+      };
     }
     try {
       const handle = await window.showSaveFilePicker({
@@ -5195,17 +5624,20 @@
           },
         ],
       });
-      return { handle, cancelled: false, supported: true };
+      return { handle, cancelled: false, supported: true, downloadWindow: null };
     } catch (error) {
-      if (error?.name === "AbortError") return { handle: null, cancelled: true, supported: true };
+      if (error?.name === "AbortError") {
+        return { handle: null, cancelled: true, supported: true, downloadWindow: null };
+      }
       throw error;
     }
   }
 
   async function saveMp4ToHandle(blob, fileHandle) {
+    const mp4Blob = normaliseMp4Blob(blob);
     const writable = await fileHandle.createWritable();
     try {
-      await writable.write(blob);
+      await writable.write(mp4Blob);
       await writable.close();
     } catch (error) {
       try {
@@ -5215,13 +5647,23 @@
       }
       throw error;
     }
-    clearReadyVideoDownload();
+    if (typeof fileHandle.getFile === "function") {
+      const savedFile = await fileHandle.getFile();
+      if (!savedFile || savedFile.size !== mp4Blob.size || savedFile.size <= 0) {
+        throw new Error("The selected MP4 file could not be verified after writing");
+      }
+    }
     return "file";
   }
 
-  function saveMp4Blob(blob, filename, fileHandle = null) {
-    if (fileHandle) return saveMp4ToHandle(blob, fileHandle);
-    publishVideoDownload(blob, filename);
+  function saveMp4Blob(blob, filename, fileHandle = null, downloadWindow = null) {
+    if (fileHandle) {
+      return saveMp4ToHandle(blob, fileHandle).then(() => {
+        publishVideoDownload(blob, filename, downloadWindow);
+        return "file";
+      });
+    }
+    publishVideoDownload(blob, filename, downloadWindow);
     return "download";
   }
 
@@ -5560,6 +6002,7 @@
       return;
     }
     if (destination.cancelled) {
+      destination.downloadWindow?.close?.();
       setStatus("Animation export cancelled");
       return;
     }
@@ -5586,18 +6029,26 @@
 
       let saveMethod;
       try {
-        saveMethod = await saveMp4Blob(video, filename, destination.handle);
+        saveMethod = await saveMp4Blob(
+          video,
+          filename,
+          destination.handle,
+          destination.downloadWindow
+        );
       } catch (fileError) {
         console.warn("Saving to the selected file failed; falling back to a browser download", fileError);
-        saveMethod = saveMp4Blob(video, filename);
-        setStatus("The selected file could not be written; a browser download was prepared instead");
+        saveMethod = await saveMp4Blob(video, filename, null, destination.downloadWindow);
+        setStatus("The selected file could not be written; the MP4 is ready for browser download");
       }
       if (saveMethod === "file") {
-        setStatus("MP4 animation saved to the selected file");
+        openVideoReadyModal({ savedToFile: true });
+        setStatus("MP4 saved to the selected location — Download MP4 also adds it to browser downloads");
       } else if (!elements.videoSaveLink.hidden) {
-        setStatus("MP4 download started — click Save MP4 if the browser did not show it");
+        openVideoReadyModal({ savedToFile: false });
+        setStatus("MP4 ready — select Download MP4 to complete the browser download");
       }
     } catch (error) {
+      destination.downloadWindow?.close?.();
       console.error("MP4 export failed", error);
       setStatus(`MP4 export failed: ${error instanceof Error ? error.message : "no compatible encoder was available"}`);
     } finally {
@@ -5656,31 +6107,100 @@
     setStatus(`Theme set to ${themeMode}`);
   }
 
-  function aboutDialogOpen() {
-    return Boolean(elements.aboutDialog && !elements.aboutDialog.hidden);
+  function aboutModalIsOpen() {
+    return Boolean(elements.aboutModal && !elements.aboutModal.hidden);
   }
 
-  function openAboutDialog() {
-    if (!elements.aboutDialog) return;
-    aboutReturnFocus = document.activeElement || elements.projectMenuButton;
+  function videoReadyModalIsOpen() {
+    return Boolean(elements.videoReadyModal && !elements.videoReadyModal.hidden);
+  }
+
+  function syncModalPageState() {
+    const open = aboutModalIsOpen() || videoReadyModalIsOpen();
+    document.body?.classList?.toggle?.("rs-modal-open", open);
+    if (elements.app) {
+      if (open) elements.app.setAttribute("aria-hidden", "true");
+      else elements.app.removeAttribute("aria-hidden");
+    }
+  }
+
+  function openAboutModal() {
+    if (!elements.aboutModal) return;
+    // The About command itself lives inside a menu that is hidden immediately
+    // afterwards, so return focus to the visible Menu button when the dialog
+    // closes rather than to an inaccessible menu item.
+    aboutReturnFocus = elements.projectMenuButton ||
+      (document.activeElement?.focus ? document.activeElement : null);
+    closeVideoReadyModal({ restoreFocus: false });
     closeProjectMenu();
     closeDownloadMenu();
-    elements.aboutDialog.hidden = false;
-    elements.aboutDialog.setAttribute("aria-hidden", "false");
-    elements.aboutMenuButton?.setAttribute("aria-expanded", "true");
-    document.body?.classList?.add("rs-modal-open");
+    elements.aboutModal.hidden = false;
+    syncModalPageState();
     requestAnimationFrame(() => elements.aboutCloseButton?.focus());
   }
 
-  function closeAboutDialog({ restoreFocus = true } = {}) {
-    if (!elements.aboutDialog || elements.aboutDialog.hidden) return;
-    elements.aboutDialog.hidden = true;
-    elements.aboutDialog.setAttribute("aria-hidden", "true");
-    elements.aboutMenuButton?.setAttribute("aria-expanded", "false");
-    document.body?.classList?.remove("rs-modal-open");
-    const returnFocus = aboutReturnFocus;
+  function closeAboutModal({ restoreFocus = true } = {}) {
+    if (!aboutModalIsOpen()) return;
+    elements.aboutModal.hidden = true;
+    syncModalPageState();
+    const returnTarget = aboutReturnFocus || elements.aboutMenuButton;
     aboutReturnFocus = null;
-    if (restoreFocus) returnFocus?.focus?.();
+    if (restoreFocus) returnTarget?.focus?.();
+  }
+
+  function trapModalFocus(modal, event) {
+    if (!modal || modal.hidden || event.key !== "Tab") return false;
+    const focusable = [...modal.querySelectorAll(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter((element) => !element.hidden);
+    if (!focusable.length) return false;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+      return true;
+    }
+    if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+      return true;
+    }
+    return false;
+  }
+
+  function trapAboutModalFocus(event) {
+    return aboutModalIsOpen() ? trapModalFocus(elements.aboutModal, event) : false;
+  }
+
+  function openVideoReadyModal({ savedToFile = false } = {}) {
+    if (!elements.videoReadyModal || !videoDownloadUrl) return;
+    videoReadyReturnFocus = elements.downloadButton ||
+      (document.activeElement?.focus ? document.activeElement : null);
+    closeAboutModal({ restoreFocus: false });
+    closeProjectMenu();
+    closeDownloadMenu();
+    if (elements.videoReadyMessage) {
+      elements.videoReadyMessage.textContent = savedToFile
+        ? "The MP4 was saved to your selected location. Select Download MP4 to also add a copy to your browser downloads."
+        : "Select Download MP4 to complete a browser-recognised download.";
+    }
+    elements.videoReadyModal.hidden = false;
+    syncModalPageState();
+    requestAnimationFrame(() => elements.videoReadyDownloadButton?.focus());
+  }
+
+  function closeVideoReadyModal({ restoreFocus = true } = {}) {
+    if (!videoReadyModalIsOpen()) return;
+    elements.videoReadyModal.hidden = true;
+    syncModalPageState();
+    const returnTarget = videoReadyReturnFocus || elements.downloadButton;
+    videoReadyReturnFocus = null;
+    if (restoreFocus) returnTarget?.focus?.();
+  }
+
+  function trapVideoReadyModalFocus(event) {
+    return videoReadyModalIsOpen() ? trapModalFocus(elements.videoReadyModal, event) : false;
   }
 
   function setProjectMenu(open, focusFirst = false) {
@@ -5756,9 +6276,20 @@
         render();
         setStatus(
           lengthMode() === "extend"
-            ? "Genome resizing will extend the right end"
-            : "Genome resizing will rescale the chromosome"
+            ? "Genome length will extend to the right"
+            : "Genome resizing will rescale the bar"
         );
+      });
+    }
+    if (elements.dnaHandednessControl) {
+      elements.dnaHandednessControl.addEventListener("change", () => {
+        pushSnapshot();
+        state.advanced.dnaHandedness = DNA_HANDEDNESS_MODES.has(
+          elements.dnaHandednessControl.value
+        )
+          ? elements.dnaHandednessControl.value
+          : DEFAULTS.advanced.dnaHandedness;
+        render();
       });
     }
     bindContinuousControl(elements.progressControl, (value) => {
@@ -5844,6 +6375,16 @@
         render();
       });
     }
+    if (elements.contourThicknessControl) {
+      bindContinuousControl(elements.contourThicknessControl, (value) => {
+        state.advanced.contourThickness = boundedControlValue(
+          "contourThickness",
+          value,
+          DEFAULTS.advanced.contourThickness
+        );
+        render();
+      });
+    }
 
     elements.basePairColorModeControl.addEventListener("change", () => {
       pushSnapshot();
@@ -5889,10 +6430,12 @@
       [elements.alwaysShowControlsToggle, "alwaysShowControls"],
       [elements.snapToBasePairsToggle, "snapToBasePairs"],
       [elements.includeExportBackgroundToggle, "includeExportBackground"],
+      [elements.contourToggle, "contour"],
     ].forEach(([control, key]) => {
       control.addEventListener("change", () => {
         pushSnapshot();
         state.advanced[key] = control.checked;
+        if (key === "contour") syncControls();
         render();
       });
     });
@@ -5925,6 +6468,13 @@
     });
     elements.backgroundColorControl.addEventListener("change", finishControlChange);
 
+    elements.contourColorControl.addEventListener("pointerdown", beginControlChange);
+    elements.contourColorControl.addEventListener("input", () => {
+      state.advanced.contourColor = elements.contourColorControl.value;
+      render();
+    });
+    elements.contourColorControl.addEventListener("change", finishControlChange);
+
     elements.undoButton.addEventListener("click", undo);
     elements.redoButton.addEventListener("click", redo);
     elements.resetButton.addEventListener("click", reset);
@@ -5955,12 +6505,23 @@
       event.preventDefault();
       setProjectMenu(true, true);
     });
-    elements.aboutMenuButton.addEventListener("click", openAboutDialog);
-    elements.aboutCloseButton.addEventListener("click", () => closeAboutDialog());
-    elements.aboutDialog.addEventListener("pointerdown", (event) => {
-      if (event.target === elements.aboutDialog) closeAboutDialog();
-    });
     elements.themeMenuButton.addEventListener("click", cycleTheme);
+    elements.aboutMenuButton.addEventListener("click", openAboutModal);
+    elements.aboutCloseButton.addEventListener("click", () => closeAboutModal());
+    elements.aboutModal.addEventListener("pointerdown", (event) => {
+      if (event.target === elements.aboutModal) closeAboutModal();
+    });
+    elements.videoReadyCloseButton.addEventListener("click", () => closeVideoReadyModal());
+    elements.videoReadyModal.addEventListener("pointerdown", (event) => {
+      if (event.target === elements.videoReadyModal) closeVideoReadyModal();
+    });
+    elements.videoReadyDownloadButton.addEventListener("click", () => {
+      setStatus("MP4 download handed to the browser");
+      setTimeout(() => closeVideoReadyModal({ restoreFocus: false }), 180);
+    });
+    elements.videoSaveLink.addEventListener("click", () => {
+      setStatus("MP4 download handed to the browser");
+    });
     elements.projectMenu.querySelectorAll('a[role="menuitem"]').forEach((link) => {
       link.addEventListener("click", closeProjectMenu);
     });
@@ -5996,11 +6557,25 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      if (aboutDialogOpen()) {
+      if (videoReadyModalIsOpen()) {
         if (event.key === "Escape") {
           event.preventDefault();
-          closeAboutDialog();
+          closeVideoReadyModal();
+          return;
         }
+        trapVideoReadyModalFocus(event);
+        return;
+      }
+      if (aboutModalIsOpen()) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeAboutModal();
+          return;
+        }
+        trapAboutModalFocus(event);
+        // Keep application shortcuts inert while the modal is open. Browser
+        // defaults such as Enter on the mail link or Tab within the dialog are
+        // left untouched.
         return;
       }
       const modifier = event.ctrlKey || event.metaKey;
@@ -6056,6 +6631,7 @@
       refreshContextAction();
     });
     window.addEventListener("beforeunload", () => {
+      persistTemplateCacheNow();
       if (videoDownloadUrl) URL.revokeObjectURL(videoDownloadUrl);
     });
     window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", () => {
@@ -6086,12 +6662,16 @@
       "projectMenuControl",
       "projectMenuButton",
       "projectMenu",
-      "aboutMenuButton",
-      "aboutDialog",
-      "aboutCloseButton",
       "themeMenuButton",
       "themeMenuIcon",
       "themeMenuValue",
+      "aboutMenuButton",
+      "aboutModal",
+      "aboutCloseButton",
+      "videoReadyModal",
+      "videoReadyCloseButton",
+      "videoReadyMessage",
+      "videoReadyDownloadButton",
       "exportPngButton",
       "exportSvgButton",
       "exportPdfButton",
@@ -6107,6 +6687,7 @@
       "modelControl",
       "lengthControl",
       "lengthModeControl",
+      "dnaHandednessControl",
       "progressControl",
       "pairResolutionControl",
       "basePairWidthControl",
@@ -6117,6 +6698,7 @@
       "strandPhaseShiftControl",
       "transitionTightnessControl",
       "terminalSmoothingControl",
+      "contourThicknessControl",
       "speedControl",
       "discreteAnimationToggle",
       "lengthOutput",
@@ -6130,6 +6712,7 @@
       "strandPhaseShiftOutput",
       "transitionTightnessOutput",
       "terminalSmoothingOutput",
+      "contourThicknessOutput",
       "speedOutput",
       "zoomOutButton",
       "zoomInButton",
@@ -6155,6 +6738,9 @@
       "guanineColor",
       "cytosineColor",
       "backgroundColorControl",
+      "contourColorControl",
+      "contourThicknessOption",
+      "contourColorOption",
       "pairsToggle",
       "newDnaToggle",
       "labelsToggle",
@@ -6163,6 +6749,7 @@
       "alwaysShowControlsToggle",
       "snapToBasePairsToggle",
       "includeExportBackgroundToggle",
+      "contourToggle",
     ].forEach((id) => {
       const key = id === "dnaCanvas" ? "canvas" : id === "replisketch-app" ? "app" : id;
       elements[key] = byId(id);
@@ -6172,7 +6759,12 @@
   function initialise() {
     collectElements();
     applyTheme(storedThemeMode());
-    state = makeDefaultState();
+    templateCacheSuspended = true;
+    state = cachedTemplateState() || makeDefaultState();
+    state.playing = false;
+    reseedNextOriginId(state);
+    viewState = fittedViewState(state);
+    templateCacheSuspended = false;
     bindControls();
     syncControls();
     render();
