@@ -33,14 +33,14 @@
     pairResolution: { min: 1, max: 10 },
     basePairWidth: { min: 0.2, max: 16 },
     weight: { min: 1, max: 20 },
-    daughterSpacing: { min: 64, max: 400 },
-    doubleStrandHeight: { min: 8, max: 56 },
+    daughterSpacing: { min: 64, max: 800 },
+    doubleStrandHeight: { min: 8, max: 160 },
     transitionTightness: { min: -100, max: 100 },
     terminalSmoothing: { min: 0, max: 6 },
     newDnaStartDistance: { min: 0, max: 20 },
     strandPhaseShift: { min: -5, max: 5 },
     aspectX: { min: 0.1, max: 10 },
-    aspectY: { min: 0.5, max: 2 },
+    aspectY: { min: 0.1, max: 10 },
   });
   const MIN_PAIR_RESOLUTION = CONTROL_RANGES.pairResolution.min;
   const MAX_BASE_PAIR_COUNT = 500;
@@ -163,6 +163,7 @@
   let modifierState = { shift: false, special: false };
   let themeMode = "system";
   let artworkStrokeScale = 1;
+  let aboutReturnFocus = null;
   const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
@@ -424,14 +425,16 @@
 
   function gridColumnCount(sourceState = state) {
     if (lengthMode(sourceState) !== "extend") return GRID_COLUMN_COUNT;
-    // Keep approximately the same genomic/grid scale while ensuring the
-    // repeating CSS grid still lands exactly on the dynamically extended end.
-    return Math.max(
-      1,
-      Math.round(
-        GRID_COLUMN_COUNT * moleculeWidthForState(sourceState) / BASE_MOLECULE_WIDTH
-      )
-    );
+    const fixedStep = BASE_MOLECULE_WIDTH / GRID_COLUMN_COUNT;
+    return Math.max(1, Math.ceil(moleculeWidthForState(sourceState) / fixedStep - EPSILON));
+  }
+
+  function gridWorldStep(sourceState = state) {
+    // A right-extending genome adds columns without changing the existing grid.
+    // Scale-within-bar mode continues to derive the grid from the current bar.
+    return lengthMode(sourceState) === "extend"
+      ? BASE_MOLECULE_WIDTH / GRID_COLUMN_COUNT
+      : moleculeWidthForState(sourceState) / GRID_COLUMN_COUNT;
   }
 
   function resizeGenomeLength(value, sourceState = state) {
@@ -934,6 +937,47 @@
     }
     return 1 - smoothstep(distance / Math.max(EPSILON, pullSpan));
   }
+
+  function terminalClosureBlend(distanceInPixels, sourceState = state) {
+    if (terminalSmoothing(sourceState) <= EPSILON) return 1;
+    const pullSpan = terminalPullSpan(0.5, "right", sourceState);
+    return smoothstep(Math.max(0, Number(distanceInPixels) || 0) / Math.max(EPSILON, pullSpan));
+  }
+
+  function rawForkTravelAt(travel, offset) {
+    return Math.max(0, (Number(travel) || 0) + (Number(offset) || 0));
+  }
+
+  function minimalEndClosureBlend(rawTravel, contactTravel, sourceState = state) {
+    // Chromosome ends follow the same post-contact rule as fork mergers: they
+    // first reach the centre line, then the two endpoint strands separate
+    // gradually according to Merge/end smoothing (or immediately for Snap).
+    if (rawTravel < contactTravel - EPSILON) return 0;
+    if (strandModel(sourceState) !== "minimal") return 1;
+    const overshoot =
+      Math.max(0, rawTravel - contactTravel) * moleculeWidthForState(sourceState);
+    return terminalClosureBlend(overshoot, sourceState);
+  }
+
+  function minimalMergeClosureMetrics(leftOrigin, rightOrigin, travel, sourceState = state) {
+    const leftRawEnd =
+      leftOrigin.startPosition + rawForkTravelAt(travel, leftOrigin.rightOffset);
+    const rightRawStart =
+      rightOrigin.startPosition - rawForkTravelAt(travel, rightOrigin.leftOffset);
+    const gapFraction = rightRawStart - leftRawEnd;
+    const contacted = gapFraction <= EPSILON;
+    const postContactDistance =
+      Math.max(0, -gapFraction) * moleculeWidthForState(sourceState) / 2;
+    return {
+      contacted,
+      gapFraction,
+      postContactDistance,
+      blend:
+        contacted && strandModel(sourceState) === "minimal"
+          ? terminalClosureBlend(postContactDistance, sourceState)
+          : Number(contacted),
+    };
+  }
   const daughterDetailFade = (profile) => smoothstep((profile - NASCENT_PROFILE_THRESHOLD) / 0.18);
   // Retained for configuration/test compatibility. Parental rungs are now
   // faded on the unreplicated side of a fork and removed immediately once the
@@ -1163,13 +1207,16 @@
     };
   }
 
-  function buildRegions(origins) {
+  function buildRegions(origins, sourceState = state) {
+    const minimal = strandModel(sourceState) === "minimal";
     const intervals = origins
       .map((origin) => ({
         start: origin.flags.left ? origin.leftPosition : origin.startPosition,
         end: origin.flags.right ? origin.rightPosition : origin.startPosition,
         startBlend: origin.flags.left ? origin.leftEdgeBlend : 1,
         endBlend: origin.flags.right ? origin.rightEdgeBlend : 1,
+        startClosureBlend: origin.flags.left ? origin.leftClosureBlend || 0 : 1,
+        endClosureBlend: origin.flags.right ? origin.rightClosureBlend || 0 : 1,
         originIds: [origin.id],
       }))
       .filter((interval) => interval.end - interval.start > EPSILON)
@@ -1182,8 +1229,13 @@
         if (interval.end > current.end + EPSILON) {
           current.end = interval.end;
           current.endBlend = interval.endBlend;
+          current.endClosureBlend = interval.endClosureBlend;
         } else if (Math.abs(interval.end - current.end) <= EPSILON) {
           current.endBlend = Math.max(current.endBlend, interval.endBlend);
+          current.endClosureBlend = Math.max(
+            current.endClosureBlend,
+            interval.endClosureBlend
+          );
         }
         current.originIds.push(...interval.originIds);
       } else {
@@ -1197,10 +1249,23 @@
       openEnd: region.end >= 1 - EPSILON,
       startBlend: region.start <= EPSILON ? 1 : region.startBlend,
       endBlend: region.end >= 1 - EPSILON ? 1 : region.endBlend,
+      startClosureBlend:
+        region.start <= EPSILON
+          ? minimal
+            ? clamp(region.startClosureBlend || 0, 0, 1)
+            : 1
+          : 0,
+      endClosureBlend:
+        region.end >= 1 - EPSILON
+          ? minimal
+            ? clamp(region.endClosureBlend || 0, 0, 1)
+            : 1
+          : 0,
     }));
   }
 
   function getReplicationModelAtTravel(travel, sourceState = state) {
+    const minimalClosures = [];
     const origins = [...sourceState.origins]
       .sort((a, b) => a.startPosition - b.startPosition)
       .map((origin, index) => {
@@ -1242,6 +1307,18 @@
                   terminalPullSpan(1, "right", sourceState)
                 )
               : 0,
+          leftClosureBlend:
+            index === 0 && flags.left
+              ? minimalEndClosureBlend(rawLeftTravel, origin.startPosition, sourceState)
+              : 0,
+          rightClosureBlend:
+            index === sourceState.origins.length - 1 && flags.right
+              ? minimalEndClosureBlend(
+                  rawRightTravel,
+                  1 - origin.startPosition,
+                  sourceState
+                )
+              : 0,
         };
       });
 
@@ -1250,6 +1327,12 @@
       const rightOrigin = origins[index + 1];
 
       if (leftOrigin.flags.right && rightOrigin.flags.left) {
+        const closureMetrics = minimalMergeClosureMetrics(
+          leftOrigin,
+          rightOrigin,
+          travel,
+          sourceState
+        );
         const meetingPoint = clamp(
           (leftOrigin.startPosition + rightOrigin.startPosition + leftOrigin.rightOffset - rightOrigin.leftOffset) / 2,
           leftOrigin.startPosition,
@@ -1272,6 +1355,24 @@
           rightOrigin.leftActive = false;
           leftOrigin.rightReason = "merge";
           rightOrigin.leftReason = "merge";
+          leftOrigin.rightClosureBlend = closureMetrics.blend;
+          rightOrigin.leftClosureBlend = closureMetrics.blend;
+          if (strandModel(sourceState) === "minimal") {
+            const closureWidths = minimalMergeClosureWidths(
+              leftOrigin,
+              rightOrigin,
+              meetingPoint,
+              sourceState
+            );
+            minimalClosures.push({
+              position: meetingPoint,
+              blend: closureMetrics.blend,
+              leftWidth: closureWidths.left,
+              rightWidth: closureWidths.right,
+              leftOriginId: leftOrigin.id,
+              rightOriginId: rightOrigin.id,
+            });
+          }
         }
       } else if (leftOrigin.flags.right && !rightOrigin.flags.left) {
         if (leftOrigin.rightPosition >= rightOrigin.startPosition - EPSILON) {
@@ -1288,28 +1389,151 @@
       }
     }
 
+    const minimal = strandModel(sourceState) === "minimal";
     origins.forEach((origin) => {
-      origin.leftTerminalOpacity = 1 - origin.leftEdgeBlend;
-      origin.rightTerminalOpacity = 1 - origin.rightEdgeBlend;
+      // In the minimal model, merge/end smoothing is strictly post-contact.
+      // Keep active fork controls fully visible while the centre-line points
+      // are still approaching one another or a chromosome end.
+      origin.leftTerminalOpacity = minimal ? Number(origin.leftActive) : 1 - origin.leftEdgeBlend;
+      origin.rightTerminalOpacity = minimal ? Number(origin.rightActive) : 1 - origin.rightEdgeBlend;
     });
 
     return {
       origins,
-      regions: buildRegions(origins),
+      regions: buildRegions(origins, sourceState),
+      minimalClosures,
       activeForkCount: origins.reduce((count, origin) => count + Number(origin.leftActive) + Number(origin.rightActive), 0),
     };
   }
 
-  function forkTravelBounds(sourceState = state) {
+  function pairForkOverlapAtTravel(leftOrigin, rightOrigin, travel) {
+    return (
+      rawForkTravelAt(travel, leftOrigin.rightOffset) +
+      rawForkTravelAt(travel, rightOrigin.leftOffset) -
+      (rightOrigin.startPosition - leftOrigin.startPosition)
+    );
+  }
+
+  function pairTravelForOverlap(
+    leftOrigin,
+    rightOrigin,
+    targetOverlap,
+    lowerBound,
+    initialUpperBound
+  ) {
+    let lower = lowerBound;
+    let upper = Math.max(initialUpperBound, lower + Math.max(targetOverlap, 0.01));
+    let expansion = Math.max(targetOverlap, 0.01);
+    for (
+      let iteration = 0;
+      iteration < 24 &&
+      pairForkOverlapAtTravel(leftOrigin, rightOrigin, upper) < targetOverlap;
+      iteration += 1
+    ) {
+      upper += expansion;
+      expansion *= 2;
+    }
+
+    for (let iteration = 0; iteration < 56; iteration += 1) {
+      const midpoint = (lower + upper) / 2;
+      if (pairForkOverlapAtTravel(leftOrigin, rightOrigin, midpoint) >= targetOverlap) {
+        upper = midpoint;
+      } else {
+        lower = midpoint;
+      }
+    }
+    return upper;
+  }
+
+  function geometricForkTravelBounds(sourceState = state) {
     if (!sourceState.origins.length) return { zero: 0, full: 0 };
     const offsets = sourceState.origins.flatMap((origin) => [origin.leftOffset, origin.rightOffset]);
     const zero = -Math.max(...offsets);
-    const full = Math.max(
+    const naiveFull = Math.max(
       ...sourceState.origins.map((origin) =>
         Math.max(origin.startPosition - origin.leftOffset, 1 - origin.startPosition - origin.rightOffset)
       )
     );
+    const origins = [...sourceState.origins].sort(
+      (first, second) => first.startPosition - second.startPosition
+    );
+    let full = Math.max(
+      zero,
+      origins[0].startPosition - origins[0].leftOffset,
+      1 - origins.at(-1).startPosition - origins.at(-1).rightOffset
+    );
+    for (let index = 0; index < origins.length - 1; index += 1) {
+      full = Math.max(
+        full,
+        pairTravelForOverlap(
+          origins[index],
+          origins[index + 1],
+          0,
+          zero,
+          naiveFull
+        )
+      );
+    }
     return { zero, full: Math.max(zero, full) };
+  }
+
+  function minimalPairClosureCompletionTravel(
+    leftOrigin,
+    rightOrigin,
+    sourceState,
+    geometricBounds
+  ) {
+    const moleculeWidth = Math.max(EPSILON, moleculeWidthForState(sourceState));
+    const pullFraction = terminalPullSpan(0.5, "right", sourceState) / moleculeWidth;
+    if (pullFraction <= EPSILON) return geometricBounds.full;
+
+    return pairTravelForOverlap(
+      leftOrigin,
+      rightOrigin,
+      pullFraction * 2,
+      geometricBounds.zero,
+      geometricBounds.full
+    );
+  }
+
+  function forkTravelBounds(sourceState = state) {
+    const geometricBounds = geometricForkTravelBounds(sourceState);
+    if (
+      !sourceState.origins.length ||
+      strandModel(sourceState) !== "minimal" ||
+      terminalSmoothing(sourceState) <= EPSILON
+    ) {
+      return geometricBounds;
+    }
+
+    const moleculeWidth = Math.max(EPSILON, moleculeWidthForState(sourceState));
+    const pullFraction = terminalPullSpan(0.5, "right", sourceState) / moleculeWidth;
+    const origins = [...sourceState.origins].sort(
+      (first, second) => first.startPosition - second.startPosition
+    );
+    let full = geometricBounds.full;
+
+    const firstOrigin = origins[0];
+    const lastOrigin = origins.at(-1);
+    full = Math.max(
+      full,
+      firstOrigin.startPosition - firstOrigin.leftOffset + pullFraction,
+      1 - lastOrigin.startPosition - lastOrigin.rightOffset + pullFraction
+    );
+
+    for (let index = 0; index < origins.length - 1; index += 1) {
+      full = Math.max(
+        full,
+        minimalPairClosureCompletionTravel(
+          origins[index],
+          origins[index + 1],
+          sourceState,
+          geometricBounds
+        )
+      );
+    }
+
+    return { zero: geometricBounds.zero, full: Math.max(geometricBounds.zero, full) };
   }
 
   function findForkTravelForReplicatedFraction(percentage, sourceState = state) {
@@ -1373,23 +1597,63 @@
     };
   }
 
-  function minimalReplicationAt(x, model) {
+  function minimalReplicationAt(x, model, sourceState = state) {
     const position = (x - VIEW.x0) / VIEW.moleculeWidth;
     const region = model.regions.find((item) => position >= item.start - EPSILON && position <= item.end + EPSILON);
     if (!region) return { amount: 0, profile: 0, region: null };
 
     const startX = VIEW.x0 + region.start * VIEW.moleculeWidth;
     const endX = VIEW.x0 + region.end * VIEW.moleculeWidth;
-    const leftProfile = region.openStart
-      ? 1
-      : transitionProfile((x - startX) / minimalRegionEdgeTransitionWidth(region, "start", model));
-    const rightProfile = region.openEnd
-      ? 1
-      : transitionProfile((endX - x) / minimalRegionEdgeTransitionWidth(region, "end", model));
-    const profile = Math.min(leftProfile, rightProfile);
+    const leftBlend = region.openStart
+      ? clamp(region.startClosureBlend ?? 1, 0, 1)
+      : 0;
+    const rightBlend = region.openEnd
+      ? clamp(region.endClosureBlend ?? 1, 0, 1)
+      : 0;
+    const leftProfile =
+      leftBlend +
+      (1 - leftBlend) *
+        transitionProfile(
+          (x - startX) /
+            minimalRegionEdgeTransitionWidth(region, "start", model, sourceState),
+          sourceState
+        );
+    const rightProfile =
+      rightBlend +
+      (1 - rightBlend) *
+        transitionProfile(
+          (endX - x) /
+            minimalRegionEdgeTransitionWidth(region, "end", model, sourceState),
+          sourceState
+        );
+    let profile = Math.min(leftProfile, rightProfile);
+
+    (model.minimalClosures || []).forEach((closure) => {
+      if (
+        closure.position < region.start - EPSILON ||
+        closure.position > region.end + EPSILON ||
+        closure.blend >= 1 - EPSILON
+      ) {
+        return;
+      }
+      const closureX = VIEW.x0 + closure.position * VIEW.moleculeWidth;
+      const closureBlend = clamp(closure.blend || 0, 0, 1);
+      const closureWidth =
+        x <= closureX
+          ? closure.leftWidth ?? closure.width
+          : closure.rightWidth ?? closure.width;
+      const closureProfile =
+        closureBlend +
+        (1 - closureBlend) *
+          transitionProfile(
+            Math.abs(x - closureX) / Math.max(EPSILON, closureWidth),
+            sourceState
+          );
+      profile = Math.min(profile, closureProfile);
+    });
 
     return {
-      amount: (state.daughterSpacing / 2) * profile,
+      amount: (sourceState.daughterSpacing / 2) * profile,
       profile,
       region,
     };
@@ -1715,6 +1979,30 @@
     return Math.min(maximumWorldWidth, width / 2);
   }
 
+  function minimalMergeClosureWidths(
+    leftOrigin,
+    rightOrigin,
+    meetingPoint,
+    sourceState = state
+  ) {
+    // Preserve the limiting shape of each approaching fork at the contact
+    // frame. Unequal bubbles can legitimately have different transition
+    // widths, so the post-contact closure uses one width on each side rather
+    // than snapping both sides to the narrower transition.
+    const leftRegion = {
+      start: Math.min(leftOrigin.leftPosition, meetingPoint),
+      end: Math.max(leftOrigin.leftPosition, meetingPoint),
+    };
+    const rightRegion = {
+      start: Math.min(meetingPoint, rightOrigin.rightPosition),
+      end: Math.max(meetingPoint, rightOrigin.rightPosition),
+    };
+    return {
+      left: Math.max(EPSILON, regionTransitionWidth(leftRegion, sourceState)),
+      right: Math.max(EPSILON, regionTransitionWidth(rightRegion, sourceState)),
+    };
+  }
+
   function facingMergeBlend(region, side, model) {
     if (!model) return 0;
     const regionIndex = model.regions.indexOf(region);
@@ -1755,16 +2043,11 @@
   }
 
   function minimalRegionEdgeTransitionWidth(region, side, model, sourceState = state) {
-    const open = side === "start" ? region.openStart : region.openEnd;
-    const blend = clamp(side === "start" ? region.startBlend || 0 : region.endBlend || 0, 0, 1);
-    const width = regionEdgeTransitionWidth(region, side, model, sourceState);
-    // Keep the unreplicated gap/tail closed in the one-line model. As the fork
-    // approaches a terminal, collapse the transition on its replicated side;
-    // this makes the contact frame the limit of the preceding geometry without
-    // using edgeBlend to open DNA that the fork has not reached yet.
-    return open
-      ? width
-      : Math.max(0.75 / Math.max(EPSILON, artworkAspectX(sourceState)), width * (1 - blend));
+    // Minimal-line forks retain their own ordinary transition width until
+    // physical contact. Do not couple or narrow that width as another fork or
+    // chromosome end approaches: merge/end smoothing begins only after the
+    // centre-line points have actually met.
+    return regionTransitionWidth(region, sourceState);
   }
 
   function visualRegionEdgeTransitionWidth(region, side, model, sourceState = state) {
@@ -1906,6 +2189,15 @@
       const endWidth = visualRegionEdgeTransitionWidth(region, "end", model);
       anchors.push(startX, Math.min(endX, startX + startWidth), Math.max(startX, endX - endWidth), endX);
     });
+    (model.minimalClosures || []).forEach((closure) => {
+      if (closure.blend >= 1 - EPSILON) return;
+      const centerX = VIEW.x0 + closure.position * VIEW.moleculeWidth;
+      anchors.push(
+        Math.max(VIEW.x0, centerX - (closure.leftWidth ?? closure.width)),
+        centerX,
+        Math.min(VIEW.x1, centerX + (closure.rightWidth ?? closure.width))
+      );
+    });
     return anchors
       .sort((first, second) => first - second)
       .filter((value, index, values) => index === 0 || Math.abs(value - values[index - 1]) > EPSILON);
@@ -1958,6 +2250,15 @@
       const endWidth = visualRegionEdgeTransitionWidth(region, "end", model);
       addWindow(startX, Math.min(endX, startX + startWidth));
       addWindow(Math.max(startX, endX - endWidth), endX);
+    });
+
+    (model.minimalClosures || []).forEach((closure) => {
+      if (closure.blend >= 1 - EPSILON) return;
+      const centerX = VIEW.x0 + closure.position * VIEW.moleculeWidth;
+      addWindow(
+        Math.max(VIEW.x0, centerX - (closure.leftWidth ?? closure.width)),
+        Math.min(VIEW.x1, centerX + (closure.rightWidth ?? closure.width))
+      );
     });
 
     // A gap gets its own endpoint-to-endpoint lattice. Because that lattice is
@@ -2803,12 +3104,11 @@
     const originX = bounds.left + frame.clientLeft;
     const originY = bounds.top + frame.clientTop;
     const anchor = transformedSvgPoint(VIEW.x0, VIEW.centerY, matrix);
-    // A fixed genomic column count keeps the grid independent of base-pair
-    // resolution while guaranteeing lines through both ruler endpoints. For
-    // odd resolutions, those endpoints are also base-pair lattice sites.
-    const columns = gridColumnCount(state);
+    // Scale-within-bar mode keeps the grid tied to the bar endpoints. In
+    // right-extension mode the original grid spacing remains exactly fixed and
+    // new columns simply continue to the right with the added genome.
     const xStep = transformedSvgPoint(
-      VIEW.x0 + VIEW.moleculeWidth / columns,
+      VIEW.x0 + gridWorldStep(state),
       VIEW.centerY,
       matrix
     );
@@ -3349,16 +3649,32 @@
     render();
   }
 
+  function fittedViewState(sourceState = state) {
+    if (lengthMode(sourceState) !== "extend") {
+      return { zoom: 1, panX: 0, panY: 0 };
+    }
+
+    const genomeWidth = Math.max(EPSILON, moleculeWidthForState(sourceState));
+    const zoom = clamp(BASE_MOLECULE_WIDTH / genomeWidth, MIN_ZOOM, MAX_ZOOM);
+    const genomeCenterX = BASE_VIEW.x0 + genomeWidth / 2;
+    return {
+      zoom,
+      panX: -zoom * (genomeCenterX - BASE_VIEW.width / 2),
+      panY: 0,
+    };
+  }
+
   function resetView() {
     const aspectChanged =
       Math.abs(artworkAspectX() - 1) >= EPSILON || Math.abs(artworkAspectY() - 1) >= EPSILON;
     if (aspectChanged) pushSnapshot();
     state.advanced.aspectX = 1;
     state.advanced.aspectY = 1;
-    viewState = { zoom: 1, panX: 0, panY: 0 };
+    syncViewGeometry(state);
+    viewState = fittedViewState(state);
     syncControls();
     render();
-    setStatus("View and aspect reset");
+    setStatus(lengthMode(state) === "extend" ? "Genome fitted to view" : "View and aspect reset");
   }
 
   function setArtworkAspectFromSlider(axis, sliderValue) {
@@ -4474,6 +4790,11 @@
     if (elements.playButton) updatePlayButton();
   }
 
+  function playbackComplete(sourceState = state) {
+    const bounds = forkTravelBounds(sourceState);
+    return sourceState.forkTravel >= bounds.full - Number.EPSILON;
+  }
+
   function animateForks(time) {
     if (!state.playing) return;
     if (!previousAnimationTime) previousAnimationTime = time;
@@ -4482,7 +4803,7 @@
     advanceForkPlayback(elapsed);
     const model = render();
 
-    if (model.activeForkCount === 0 || state.progress >= 100) {
+    if (playbackComplete()) {
       stopAnimation();
       setStatus("All active forks have merged or reached an end");
       return;
@@ -4499,7 +4820,7 @@
     if (!state.origins.length) return;
 
     pushSnapshot();
-    if (getReplicationModel().activeForkCount === 0 || state.progress >= 100) {
+    if (playbackComplete()) {
       clearForkOffsets();
       state.forkTravel = 0;
       state.progress = 0;
@@ -4907,6 +5228,12 @@
   function forkCompletionTravel(sourceState = state) {
     if (!sourceState.origins.length) return forkTravelBounds(sourceState).zero;
     const bounds = forkTravelBounds(sourceState);
+    if (
+      strandModel(sourceState) === "minimal" &&
+      terminalSmoothing(sourceState) > EPSILON
+    ) {
+      return bounds.full;
+    }
     if (replicatedFraction(getReplicationModelAtTravel(bounds.zero, sourceState)) >= 100) return bounds.zero;
 
     let lower = bounds.zero;
@@ -5329,6 +5656,33 @@
     setStatus(`Theme set to ${themeMode}`);
   }
 
+  function aboutDialogOpen() {
+    return Boolean(elements.aboutDialog && !elements.aboutDialog.hidden);
+  }
+
+  function openAboutDialog() {
+    if (!elements.aboutDialog) return;
+    aboutReturnFocus = document.activeElement || elements.projectMenuButton;
+    closeProjectMenu();
+    closeDownloadMenu();
+    elements.aboutDialog.hidden = false;
+    elements.aboutDialog.setAttribute("aria-hidden", "false");
+    elements.aboutMenuButton?.setAttribute("aria-expanded", "true");
+    document.body?.classList?.add("rs-modal-open");
+    requestAnimationFrame(() => elements.aboutCloseButton?.focus());
+  }
+
+  function closeAboutDialog({ restoreFocus = true } = {}) {
+    if (!elements.aboutDialog || elements.aboutDialog.hidden) return;
+    elements.aboutDialog.hidden = true;
+    elements.aboutDialog.setAttribute("aria-hidden", "true");
+    elements.aboutMenuButton?.setAttribute("aria-expanded", "false");
+    document.body?.classList?.remove("rs-modal-open");
+    const returnFocus = aboutReturnFocus;
+    aboutReturnFocus = null;
+    if (restoreFocus) returnFocus?.focus?.();
+  }
+
   function setProjectMenu(open, focusFirst = false) {
     elements.projectMenu.hidden = !open;
     elements.projectMenuControl.classList.toggle("is-open", open);
@@ -5402,8 +5756,8 @@
         render();
         setStatus(
           lengthMode() === "extend"
-            ? "Genome length will extend to the right"
-            : "Genome length will change the bar scale"
+            ? "Genome resizing will extend the right end"
+            : "Genome resizing will rescale the chromosome"
         );
       });
     }
@@ -5601,6 +5955,11 @@
       event.preventDefault();
       setProjectMenu(true, true);
     });
+    elements.aboutMenuButton.addEventListener("click", openAboutDialog);
+    elements.aboutCloseButton.addEventListener("click", () => closeAboutDialog());
+    elements.aboutDialog.addEventListener("pointerdown", (event) => {
+      if (event.target === elements.aboutDialog) closeAboutDialog();
+    });
     elements.themeMenuButton.addEventListener("click", cycleTheme);
     elements.projectMenu.querySelectorAll('a[role="menuitem"]').forEach((link) => {
       link.addEventListener("click", closeProjectMenu);
@@ -5637,6 +5996,13 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      if (aboutDialogOpen()) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeAboutDialog();
+        }
+        return;
+      }
       const modifier = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       if (event.key === "Shift") {
@@ -5720,6 +6086,9 @@
       "projectMenuControl",
       "projectMenuButton",
       "projectMenu",
+      "aboutMenuButton",
+      "aboutDialog",
+      "aboutCloseButton",
       "themeMenuButton",
       "themeMenuIcon",
       "themeMenuValue",

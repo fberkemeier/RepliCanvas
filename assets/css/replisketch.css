@@ -934,14 +934,13 @@ input[type="range"] {
 }
 
 .rs-options-range {
-  margin: 6px 0 4px;
-  padding: 9px 0 5px;
-  border-top: 1px solid var(--rs-soft);
+  margin: 3px 0;
+  padding: 3px 0;
 }
 
 .rs-compact-section .rs-options-range {
-  margin: 4px 0 2px;
-  padding: 6px 0 3px;
+  margin: 2px 0;
+  padding: 3px 0;
 }
 
 .rs-options-range label {
@@ -2405,9 +2404,8 @@ html[data-theme="dark"] .rs-header-stats .rs-stat:first-child {
 
 .rs-options-select {
   gap: 4px;
-  margin: 5px 0 3px;
-  padding: 6px 0 4px;
-  border-top: 1px solid var(--rs-soft);
+  margin: 2px 0 5px;
+  padding: 0;
 }
 
 .rs-options-select label {
@@ -2613,3 +2611,223 @@ html[data-theme="dark"] .rs-aspect-symbol {
 .rs-unreplicate-preview {
   pointer-events: none;
 }
+
+/* Round 10: type-grouped advanced controls and About dialog. */
+.rs-options-panel,
+.rs-compact-section .rs-options-panel {
+  gap: 0;
+}
+
+.rs-options-group {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.rs-options-group + .rs-options-group {
+  margin-top: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rs-soft);
+}
+
+.rs-options-dropdown-group {
+  gap: 6px;
+}
+
+.rs-options-slider-group {
+  gap: 1px;
+}
+
+.rs-options-select,
+.rs-compact-section .rs-options-select,
+.rs-length-mode-control {
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.rs-options-range,
+.rs-compact-section .rs-options-range {
+  margin: 0;
+  padding: 6px 0 4px;
+  border-top: 0;
+}
+
+.rs-options-slider-group .rs-options-range + .rs-options-range {
+  margin-top: 1px;
+}
+
+.rs-options-colour-group .rs-colour-option {
+  min-height: 30px;
+}
+
+.rs-about-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(9, 18, 22, 0.34);
+  backdrop-filter: blur(11px) saturate(0.88);
+  -webkit-backdrop-filter: blur(11px) saturate(0.88);
+}
+
+.rs-about-overlay[hidden] {
+  display: none;
+}
+
+.rs-about-dialog {
+  position: relative;
+  width: min(540px, calc(100vw - 36px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 34px 44px 31px;
+  border: 1px solid rgba(116, 145, 153, 0.28);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.985);
+  box-shadow: 0 30px 90px rgba(12, 29, 35, 0.28);
+  color: var(--rs-ink);
+  text-align: center;
+  animation: rs-about-enter 150ms ease-out;
+}
+
+@keyframes rs-about-enter {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.rs-about-close {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rs-muted);
+  cursor: pointer;
+}
+
+.rs-about-close:hover,
+.rs-about-close:focus-visible {
+  border-color: var(--rs-soft);
+  background: #eef5f3;
+  color: var(--rs-ink);
+}
+
+.rs-about-close svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.rs-about-logo {
+  display: block;
+  width: min(300px, 78%);
+  height: auto;
+  margin: 2px auto 16px;
+  object-fit: contain;
+}
+
+.rs-about-dialog h2 {
+  margin: 0 0 13px;
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+}
+
+.rs-about-lead {
+  max-width: 430px;
+  margin: 0 auto 13px;
+  color: var(--rs-ink);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.rs-about-copy {
+  max-width: 440px;
+  margin: 0 auto;
+  color: var(--rs-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.rs-about-rule {
+  width: 52px;
+  height: 1px;
+  margin: 23px auto 17px;
+  background: var(--rs-soft);
+}
+
+.rs-about-credit {
+  margin: 0 0 5px;
+  color: var(--rs-ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.rs-about-email {
+  color: var(--rs-project-blue);
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.rs-about-email:hover,
+.rs-about-email:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+html[data-theme="dark"] .rs-about-overlay {
+  background: rgba(3, 8, 10, 0.55);
+}
+
+html[data-theme="dark"] .rs-about-dialog {
+  border-color: #405158;
+  background: rgba(24, 35, 39, 0.985);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.58);
+}
+
+html[data-theme="dark"] .rs-about-logo {
+  filter: invert(1) hue-rotate(180deg) brightness(1.12) saturate(0.92);
+}
+
+html[data-theme="dark"] .rs-about-close:hover,
+html[data-theme="dark"] .rs-about-close:focus-visible {
+  border-color: #405158;
+  background: #25363b;
+}
+
+@media (max-width: 560px) {
+  .rs-about-overlay {
+    padding: 14px;
+  }
+
+  .rs-about-dialog {
+    width: min(100%, 520px);
+    max-height: calc(100vh - 28px);
+    padding: 30px 24px 26px;
+  }
+
+  .rs-about-logo {
+    width: min(260px, 80%);
+  }
+}
+

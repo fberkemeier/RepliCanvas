@@ -74,17 +74,20 @@ const testApi = `
     effectiveTerminalSmoothing,
     encodeMp4WithMediabunnyCodec,
     findForkTravelForReplicatedFraction,
+    fittedViewState,
     fixedUiTransform,
     fixedVideoSvgSource,
     forkCompletionTravel,
     forkDescriptors,
     forkTravelBounds,
+    geometricForkTravelBounds,
     forksShouldCollapse,
     getReplicationModel,
     getReplicationModelAtTravel,
     genomicPositionAtFraction,
     genomeDistanceScale,
     gridColumnCount,
+    gridWorldStep,
     helixWave,
     insetBasePairSegment,
     invertHexColour,
@@ -100,6 +103,8 @@ const testApi = `
     makeOrigins,
     mergeOverlappingBubbleState,
     mergeOverlappingBubbleDuringDrag,
+    minimalMergeClosureMetrics,
+    minimalRegionEdgeTransitionWidth,
     minimalReplicationAt,
     modelSupportsDoubleStrandDetails,
     nascentSpan,
@@ -121,6 +126,7 @@ const testApi = `
     referenceBasePairSubdivisionCount,
     playbackSpeed,
     playbackSpeedFromMultiplier,
+    playbackComplete,
     speedMultiplier,
     speedMultiplierLabel,
     overlappingBubbleCluster,
@@ -174,6 +180,7 @@ const testApi = `
     synchroniseSPhaseFromGeometry,
     templateY,
     terminalClosureBoundaryForFork,
+    terminalClosureBlend,
     terminalEdgeBlend,
     terminalPullSpan,
     terminalSmoothing,
@@ -633,7 +640,7 @@ test("range-backed settings normalise imported values to the supported safe boun
     basePairWidth: 20,
     weight: 20,
     daughterSpacing: 1000,
-    doubleStrandHeight: 100,
+    doubleStrandHeight: 1000,
     speed: 50,
     advanced: { terminalSmoothing: 99, transitionTightness: 1000 },
   });
@@ -642,8 +649,8 @@ test("range-backed settings normalise imported values to the supported safe boun
   assert.equal(high.pairResolution, 10);
   assert.equal(high.basePairWidth, 16);
   assert.equal(high.weight, 20);
-  assert.equal(high.daughterSpacing, 400);
-  assert.equal(high.doubleStrandHeight, 56);
+  assert.equal(high.daughterSpacing, 800);
+  assert.equal(high.doubleStrandHeight, 160);
   assert.equal(high.speed, 2.75 * 3);
   assert.equal(high.advanced.terminalSmoothing, 6);
   assert.equal(high.advanced.transitionTightness, 100);
@@ -1448,13 +1455,13 @@ test("artwork aspect is persistent, pointer-correct, and shared by preview and v
   state.advanced.aspectY = 0.1;
   api.normaliseStateSchema(state);
   assert.equal(state.advanced.aspectX, 10);
-  assert.equal(state.advanced.aspectY, 0.5);
+  assert.equal(state.advanced.aspectY, 0.1);
 
   assert.equal(api.aspectFactorFromSlider("x", 0), 1);
   assert.equal(api.aspectFactorFromSlider("x", 100), 10);
   assert.equal(api.aspectFactorFromSlider("x", -100), 0.1);
-  assert.equal(api.aspectFactorFromSlider("y", 100), 2);
-  assert.equal(api.aspectFactorFromSlider("y", -100), 0.5);
+  assert.equal(api.aspectFactorFromSlider("y", 100), 10);
+  assert.equal(api.aspectFactorFromSlider("y", -100), 0.1);
   assert.ok(Math.abs(api.aspectSliderValue("x", { advanced: { aspectX: 1 } })) < 1e-12);
 });
 
@@ -2024,7 +2031,7 @@ test("rendered fork geometry ignores a distant bubble until the facing terminal 
   assert.ok(Math.abs(terminalModel.regions[0].endBlend - terminalModel.regions[1].startBlend) < 1e-9);
 });
 
-test("unequal bubbles share only their facing geometry in the final merge zone", () => {
+test("unequal minimal bubbles retain their independent fork shapes until physical contact", () => {
   const state = freshState();
   state.advanced.strandModel = "minimal";
   state.forkTravel = 0.3;
@@ -2046,37 +2053,88 @@ test("unequal bubbles share only their facing geometry in the final merge zone",
   const wideOwnWidth = api.regionTransitionWidth(wide, state);
   const narrowOwnWidth = api.regionTransitionWidth(narrow, state);
   assert.ok(wideOwnWidth > narrowOwnWidth * 4, "the regression needs strongly unequal bubbles");
-
-  const wideFacingWidth = api.regionEdgeTransitionWidth(wide, "end", model, state);
-  const narrowFacingWidth = api.regionEdgeTransitionWidth(narrow, "start", model, state);
   assert.ok(wide.endBlend > 0.5 && narrow.startBlend > 0.5, "forks must be in the final pull zone");
-  assert.ok(Math.abs(wideFacingWidth - narrowFacingWidth) < 1e-9);
-  assert.ok(Math.abs(wideFacingWidth - narrowOwnWidth) < 1e-9);
+
+  const wideFacingWidth = api.minimalRegionEdgeTransitionWidth(wide, "end", model, state);
+  const narrowFacingWidth = api.minimalRegionEdgeTransitionWidth(narrow, "start", model, state);
+  assert.ok(Math.abs(wideFacingWidth - wideOwnWidth) < 1e-9);
+  assert.ok(Math.abs(narrowFacingWidth - narrowOwnWidth) < 1e-9);
+  assert.ok(
+    Math.abs(wideFacingWidth - narrowFacingWidth) > 1,
+    "minimal forks must not be forced into one shared, near-vertical transition"
+  );
 
   const earlyWide = { ...wide, endBlend: 0.25 };
   const earlyNarrow = { ...narrow, startBlend: 0.25 };
   const earlyModel = { ...model, regions: [earlyWide, earlyNarrow] };
-  const earlyWideFacingWidth = api.regionEdgeTransitionWidth(earlyWide, "end", earlyModel, state);
   assert.ok(
-    Math.abs(earlyWideFacingWidth - (wideOwnWidth + narrowOwnWidth) / 2) < 1e-9,
-    "shared geometry should ease in rather than snapping at the start of the terminal pull"
+    Math.abs(
+      api.minimalRegionEdgeTransitionWidth(earlyWide, "end", earlyModel, state) - wideOwnWidth
+    ) < 1e-9
+  );
+  assert.ok(
+    Math.abs(
+      api.minimalRegionEdgeTransitionWidth(earlyNarrow, "start", earlyModel, state) - narrowOwnWidth
+    ) < 1e-9
   );
 
   const leftEdgeX = api.VIEW.x0 + wide.end * api.VIEW.moleculeWidth;
   const rightEdgeX = api.VIEW.x0 + narrow.start * api.VIEW.moleculeWidth;
-  const meetingX = (leftEdgeX + rightEdgeX) / 2;
   const sampling = api.replicationPathSampling(model);
   assert.ok(
     sampling.localWindows.some(
       (window) => Math.abs(window.fromX - leftEdgeX) < 1e-8 && Math.abs(window.toX - rightEdgeX) < 1e-8
     ),
-    "the closing gap should switch to a symmetric local sample lattice"
+    "the closing gap should retain a dense endpoint-to-endpoint sample lattice"
   );
 
-  for (const offset of [0, (rightEdgeX - leftEdgeX) / 4, (rightEdgeX - leftEdgeX) / 2, 8, 12]) {
-    const leftY = api.templateY(meetingX - offset, "a", model);
-    const rightY = api.templateY(meetingX + offset, "a", model);
-    assert.ok(Math.abs(leftY - rightY) < 1e-8, `merge envelope differs at ${offset}px`);
+  for (const offset of [2, 4, 8]) {
+    const leftProfile =
+      (api.VIEW.centerY - api.templateY(leftEdgeX - offset, "a", model)) /
+      (state.daughterSpacing / 2);
+    const rightProfile =
+      (api.VIEW.centerY - api.templateY(rightEdgeX + offset, "a", model)) /
+      (state.daughterSpacing / 2);
+    assert.ok(
+      Math.abs(leftProfile - api.transitionProfile(offset / wideOwnWidth, state)) < 2e-3,
+      `wide fork lost its ordinary transition at ${offset}px`
+    );
+    assert.ok(
+      Math.abs(rightProfile - api.transitionProfile(offset / narrowOwnWidth, state)) < 2e-3,
+      `narrow fork lost its ordinary transition at ${offset}px`
+    );
+  }
+
+  const contactTravel =
+    (state.origins[1].startPosition -
+      state.origins[0].startPosition -
+      state.origins[0].rightOffset -
+      state.origins[1].leftOffset) /
+    2;
+  state.forkTravel = contactTravel;
+  api.setState(state);
+  const atContact = api.getReplicationModel();
+  assert.equal(atContact.minimalClosures.length, 1);
+  const closure = atContact.minimalClosures[0];
+  assert.equal(closure.blend, 0);
+  assert.ok(
+    closure.leftWidth > closure.rightWidth * 2,
+    "the contact frame must preserve the unequal limiting fork widths"
+  );
+  const contactX = api.VIEW.x0 + closure.position * api.VIEW.moleculeWidth;
+  for (const offset of [2, 4, 8]) {
+    assert.ok(
+      Math.abs(
+        api.minimalReplicationAt(contactX - offset, atContact, state).profile -
+          api.transitionProfile(offset / closure.leftWidth, state)
+      ) < 2e-3
+    );
+    assert.ok(
+      Math.abs(
+        api.minimalReplicationAt(contactX + offset, atContact, state).profile -
+          api.transitionProfile(offset / closure.rightWidth, state)
+      ) < 2e-3
+    );
   }
 });
 
@@ -2286,7 +2344,7 @@ test("schematic and minimal merges stay symmetric when one opposing fork is stil
   }
 });
 
-test("minimal lines keep an approaching merge gap closed until the forks make contact", () => {
+test("minimal lines keep a merge gap closed, join first, then lift apart after contact", () => {
   const state = freshState();
   state.advanced.strandModel = "minimal";
   state.origins = [
@@ -2294,6 +2352,7 @@ test("minimal lines keep an approaching merge gap closed until the forks make co
     { id: "strict-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
   ];
   const gap = 5;
+  const contactTravel = 0.25;
   state.forkTravel =
     (state.origins[1].startPosition - state.origins[0].startPosition - gap / api.VIEW.moleculeWidth) / 2;
   api.setState(state);
@@ -2301,7 +2360,13 @@ test("minimal lines keep an approaching merge gap closed until the forks make co
   const beforeContact = api.getReplicationModel();
   const leftEdgeX = api.VIEW.x0 + beforeContact.regions[0].end * api.VIEW.moleculeWidth;
   const rightEdgeX = api.VIEW.x0 + beforeContact.regions[1].start * api.VIEW.moleculeWidth;
-  assert.ok(beforeContact.regions[0].endBlend > 0, "fixture must be inside the former visual-bridge zone");
+  assert.ok(beforeContact.regions[0].endBlend > 0, "fixture must be inside the terminal pull zone");
+  assert.equal(beforeContact.origins[0].rightTerminalOpacity, 1);
+  assert.equal(beforeContact.origins[1].leftTerminalOpacity, 1);
+  assert.ok(
+    api.minimalRegionEdgeTransitionWidth(beforeContact.regions[0], "end", beforeContact, state) > 40,
+    "the approaching minimal fork must retain its smooth transition width"
+  );
 
   for (const x of [leftEdgeX, leftEdgeX + gap * 0.25, (leftEdgeX + rightEdgeX) / 2, rightEdgeX]) {
     assert.equal(api.minimalReplicationAt(x, beforeContact).profile, 0);
@@ -2320,26 +2385,55 @@ test("minimal lines keep an approaching merge gap closed until the forks make co
     }
   });
 
-  state.forkTravel = 0.25;
+  state.forkTravel = contactTravel;
   api.setState(state);
   const atContact = api.getReplicationModel();
   const meetingX = api.VIEW.x0 + api.VIEW.moleculeWidth / 2;
   assert.equal(atContact.regions.length, 1);
-  assert.ok(api.templateY(meetingX, "a", atContact) < api.VIEW.centerY - state.daughterSpacing * 0.45);
-  assert.ok(api.templateY(meetingX, "b", atContact) > api.VIEW.centerY + state.daughterSpacing * 0.45);
+  assert.equal(atContact.minimalClosures.length, 1);
+  assert.equal(atContact.minimalClosures[0].blend, 0);
+  assert.equal(api.minimalReplicationAt(meetingX, atContact).profile, 0);
+  assert.equal(api.templateY(meetingX, "a", atContact), api.VIEW.centerY);
+  assert.equal(api.templateY(meetingX, "b", atContact), api.VIEW.centerY);
+
+  const pullFraction = api.terminalPullSpan(0.5, "right", state) / api.VIEW.moleculeWidth;
+  state.forkTravel = contactTravel + pullFraction / 2;
+  api.setState(state);
+  const halfway = api.getReplicationModel();
+  assert.ok(Math.abs(halfway.minimalClosures[0].blend - 0.5) < 1e-10);
+  assert.ok(Math.abs(api.minimalReplicationAt(meetingX, halfway).profile - 0.5) < 1e-10);
+  assert.ok(
+    Math.abs(api.templateY(meetingX, "a", halfway) - (api.VIEW.centerY - state.daughterSpacing / 4)) < 1e-8
+  );
+  assert.ok(
+    Math.abs(api.templateY(meetingX, "b", halfway) - (api.VIEW.centerY + state.daughterSpacing / 4)) < 1e-8
+  );
+
+  state.forkTravel = api.forkTravelBounds(state).full;
+  api.setState(state);
+  const completed = api.getReplicationModel();
+  assert.equal(completed.minimalClosures[0].blend, 1);
+  assert.equal(api.minimalReplicationAt(meetingX, completed).profile, 1);
+  assert.ok(api.templateY(meetingX, "a", completed) < api.VIEW.centerY - state.daughterSpacing * 0.45);
+  assert.ok(api.templateY(meetingX, "b", completed) > api.VIEW.centerY + state.daughterSpacing * 0.45);
 });
 
-test("minimal lines keep a chromosome tail closed until the fork reaches the end", () => {
+test("minimal lines keep a chromosome tail closed, meet the end, then lift apart", () => {
   const state = freshState();
   state.advanced.strandModel = "minimal";
   state.origins = [{ id: "strict-end", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
   const tail = 4;
-  state.forkTravel = 0.5 - tail / api.VIEW.moleculeWidth;
+  const contactTravel = 0.5;
+  state.forkTravel = contactTravel - tail / api.VIEW.moleculeWidth;
   api.setState(state);
 
   const beforeEnd = api.getReplicationModel();
   const edgeX = api.VIEW.x0 + beforeEnd.regions[0].end * api.VIEW.moleculeWidth;
   assert.ok(beforeEnd.regions[0].endBlend > 0, "fixture must be inside the terminal pull zone");
+  assert.ok(
+    api.minimalRegionEdgeTransitionWidth(beforeEnd.regions[0], "end", beforeEnd, state) > 40,
+    "the approaching chromosome end must retain its smooth transition width"
+  );
   for (const x of [edgeX, edgeX + tail / 2, api.VIEW.x1]) {
     assert.equal(api.minimalReplicationAt(x, beforeEnd).profile, 0);
     assert.equal(api.templateY(x, "a", beforeEnd), api.VIEW.centerY);
@@ -2355,12 +2449,81 @@ test("minimal lines keep a chromosome tail closed until the fork reaches the end
     }
   });
 
-  state.forkTravel = 0.5;
+  state.forkTravel = contactTravel;
   api.setState(state);
   const atEnd = api.getReplicationModel();
   assert.equal(atEnd.regions[0].openEnd, true);
-  assert.ok(api.templateY(api.VIEW.x1, "a", atEnd) < api.VIEW.centerY - state.daughterSpacing * 0.45);
-  assert.ok(api.templateY(api.VIEW.x1, "b", atEnd) > api.VIEW.centerY + state.daughterSpacing * 0.45);
+  assert.equal(atEnd.regions[0].endClosureBlend, 0);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, atEnd).profile, 0);
+  assert.equal(api.templateY(api.VIEW.x1, "a", atEnd), api.VIEW.centerY);
+  assert.equal(api.templateY(api.VIEW.x1, "b", atEnd), api.VIEW.centerY);
+
+  const pullFraction = api.terminalPullSpan(1, "right", state) / api.VIEW.moleculeWidth;
+  state.forkTravel = contactTravel + pullFraction / 2;
+  api.setState(state);
+  const halfway = api.getReplicationModel();
+  assert.ok(Math.abs(halfway.regions[0].endClosureBlend - 0.5) < 1e-10);
+  assert.ok(Math.abs(api.minimalReplicationAt(api.VIEW.x1, halfway).profile - 0.5) < 1e-10);
+
+  state.forkTravel = api.forkTravelBounds(state).full;
+  api.setState(state);
+  const completed = api.getReplicationModel();
+  assert.equal(completed.regions[0].endClosureBlend, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, completed).profile, 1);
+  assert.ok(api.templateY(api.VIEW.x1, "a", completed) < api.VIEW.centerY - state.daughterSpacing * 0.45);
+  assert.ok(api.templateY(api.VIEW.x1, "b", completed) > api.VIEW.centerY + state.daughterSpacing * 0.45);
+});
+
+test("minimal merge/end smoothing still snaps immediately when set to zero", () => {
+  const state = freshState();
+  state.advanced.strandModel = "minimal";
+  state.advanced.terminalSmoothing = 0;
+  state.origins = [
+    { id: "snap-minimal-left", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "snap-minimal-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
+  ];
+  state.forkTravel = 0.25;
+  api.setState(state);
+
+  const merged = api.getReplicationModel();
+  const meetingX = api.VIEW.x0 + api.VIEW.moleculeWidth / 2;
+  assert.equal(merged.minimalClosures[0].blend, 1);
+  assert.equal(api.minimalReplicationAt(meetingX, merged).profile, 1);
+  assert.equal(api.forkTravelBounds(state).full, api.geometricForkTravelBounds(state).full);
+
+  state.origins = [{ id: "snap-minimal-end", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 }];
+  state.forkTravel = 0.5;
+  api.setState(state);
+  const ended = api.getReplicationModel();
+  assert.equal(ended.regions[0].endClosureBlend, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, ended).profile, 1);
+});
+
+test("minimal playback and MP4 continue through the post-contact closure interval", () => {
+  const state = freshState();
+  state.advanced.strandModel = "minimal";
+  state.advanced.terminalSmoothing = 1.5;
+  state.origins = [
+    { id: "tail-left", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "tail-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
+  ];
+  state.forkTravel = api.geometricForkTravelBounds(state).full;
+  api.setState(state);
+
+  const contactModel = api.getReplicationModel();
+  assert.equal(contactModel.activeForkCount, 0);
+  assert.equal(contactModel.minimalClosures[0].blend, 0);
+  assert.equal(api.playbackComplete(state), false);
+
+  const contactTravel = state.forkTravel;
+  api.advanceForkPlayback(100, state);
+  assert.ok(state.forkTravel > contactTravel, "playback must continue after the forks have met");
+  const lifted = api.getReplicationModelAtTravel(state.forkTravel, state);
+  assert.ok(lifted.minimalClosures[0].blend > 0 && lifted.minimalClosures[0].blend < 1);
+
+  const plan = api.videoFramePlan(state);
+  assert.equal(plan.completionTravel, api.forkTravelBounds(state).full);
+  assert.ok(plan.completionTravel > api.geometricForkTravelBounds(state).full);
 });
 
 test("circular transition is a quarter-circle on each side of the replication envelope", () => {
@@ -2818,8 +2981,8 @@ test("all range controls expose the expanded safe contracts and correct initial 
     pairResolutionControl: ["1", "10", "1"],
     basePairWidthControl: ["0.2", "16", "0.1"],
     weightControl: ["1", "20", "0.5"],
-    daughterSpacingControl: ["64", "400", "4"],
-    doubleStrandHeightControl: ["8", "56", "2"],
+    daughterSpacingControl: ["64", "800", "4"],
+    doubleStrandHeightControl: ["8", "160", "2"],
     transitionTightnessControl: ["-100", "100", "1"],
     terminalSmoothingControl: ["0", "6", "0.25"],
     newDnaStartDistanceControl: ["0", "20", "0.25"],
@@ -3545,7 +3708,7 @@ test("the fixed preview grid spans both genomic endpoints independently of base-
   assert.equal(api.GRID_COLUMN_COUNT, 12);
   const gridStep = api.VIEW.moleculeWidth / api.GRID_COLUMN_COUNT;
   assert.equal(api.VIEW.x0 + gridStep * api.GRID_COLUMN_COUNT, api.VIEW.x1);
-  assert.match(source, /VIEW\.x0 \+ VIEW\.moleculeWidth \/ columns/);
+  assert.match(source, /VIEW\.x0 \+ gridWorldStep\(state\)/);
   assert.match(source, /const anchor = transformedSvgPoint\(VIEW\.x0/);
   assert.doesNotMatch(source, /--rs-grid-x[^\n]*basePairResolution/);
 });
@@ -4141,8 +4304,8 @@ test("genome length supports scale-changing and right-extension modes with scale
   assert.ok(Math.abs(afterAspectX - beforeAspectX) < 1e-9);
 
   const selector = html.match(/<select id="lengthModeControl">[\s\S]*?<\/select>/)?.[0] || "";
-  assert.match(selector, /<option value="scale" selected>Change bar scale<\/option>/);
-  assert.match(selector, /<option value="extend">Extend to the right<\/option>/);
+  assert.match(selector, /<option value="scale" selected>Rescale chromosome<\/option>/);
+  assert.match(selector, /<option value="extend">Extend right end<\/option>/);
 });
 
 test("Space toggles playback outside editable controls and restarts completed S phase", () => {
@@ -4165,8 +4328,20 @@ test("Space toggles playback outside editable controls and restarts completed S 
   assert.match(source, /if \(isPlaybackSpaceShortcut\(event\)\) \{[\s\S]*?toggleAnimation\(\);/);
   assert.match(
     source,
-    /if \(getReplicationModel\(\)\.activeForkCount === 0 \|\| state\.progress >= 100\) \{[\s\S]*?state\.forkTravel = 0;[\s\S]*?state\.progress = 0;/
+    /if \(playbackComplete\(\)\) \{[\s\S]*?state\.forkTravel = 0;[\s\S]*?state\.progress = 0;/
   );
+
+  const minimal = freshState();
+  minimal.advanced.strandModel = "minimal";
+  minimal.origins = [
+    { id: "space-left", position: 0.25, startPosition: 0.25, leftOffset: 0, rightOffset: 0 },
+    { id: "space-right", position: 0.75, startPosition: 0.75, leftOffset: 0, rightOffset: 0 },
+  ];
+  minimal.forkTravel = 0.25;
+  api.setState(minimal);
+  assert.equal(api.playbackComplete(minimal), false, "contact must not skip the minimal closure animation");
+  minimal.forkTravel = api.forkTravelBounds(minimal).full;
+  assert.equal(api.playbackComplete(minimal), true);
 });
 
 
@@ -4212,4 +4387,148 @@ test("right-extension mode preserves fork speed, grid scale, and video timing de
   assert.equal(api.gridColumnCount(extended), 24);
   assert.match(source, /speed \* genomeDistanceScale\(sourceState\)/);
   assert.match(source, /speed \*[\s\S]*genomeDistanceScale\(videoState\)/);
+});
+
+test("minimal merge/end smoothing lifts both chromosome endpoints only after contact", () => {
+  const state = freshState();
+  state.advanced.strandModel = "minimal";
+  state.advanced.terminalSmoothing = 1.5;
+  state.origins = [
+    { id: "both-ends", position: 0.5, startPosition: 0.5, leftOffset: 0, rightOffset: 0 },
+  ];
+  const contactTravel = 0.5;
+
+  state.forkTravel = contactTravel;
+  api.setState(state);
+  const contact = api.getReplicationModel();
+  assert.equal(contact.regions[0].startClosureBlend, 0);
+  assert.equal(contact.regions[0].endClosureBlend, 0);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x0, contact).profile, 0);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, contact).profile, 0);
+  assert.equal(api.templateY(api.VIEW.x0, "a", contact), api.VIEW.centerY);
+  assert.equal(api.templateY(api.VIEW.x1, "b", contact), api.VIEW.centerY);
+
+  const pullFraction = api.terminalPullSpan(0, "left", state) / api.VIEW.moleculeWidth;
+  state.forkTravel = contactTravel + pullFraction / 2;
+  api.setState(state);
+  const halfway = api.getReplicationModel();
+  assert.ok(Math.abs(halfway.regions[0].startClosureBlend - 0.5) < 1e-10);
+  assert.ok(Math.abs(halfway.regions[0].endClosureBlend - 0.5) < 1e-10);
+  for (const x of [api.VIEW.x0, api.VIEW.x1]) {
+    assert.ok(Math.abs(api.minimalReplicationAt(x, halfway).profile - 0.5) < 1e-10);
+    assert.ok(
+      Math.abs(api.templateY(x, "a", halfway) - (api.VIEW.centerY - state.daughterSpacing / 4)) < 1e-8
+    );
+    assert.ok(
+      Math.abs(api.templateY(x, "b", halfway) - (api.VIEW.centerY + state.daughterSpacing / 4)) < 1e-8
+    );
+  }
+
+  state.forkTravel = api.forkTravelBounds(state).full;
+  api.setState(state);
+  const complete = api.getReplicationModel();
+  assert.equal(complete.regions[0].startClosureBlend, 1);
+  assert.equal(complete.regions[0].endClosureBlend, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x0, complete).profile, 1);
+  assert.equal(api.minimalReplicationAt(api.VIEW.x1, complete).profile, 1);
+});
+
+test("right-extending genomes fit their complete length into the reference viewport", () => {
+  const extended = freshState();
+  extended.length = 125;
+  extended.advanced.lengthMode = "extend";
+  api.setState(extended);
+
+  const fit = api.fittedViewState(extended);
+  const expectedZoom = 1104 / api.moleculeWidthForState(extended);
+  assert.ok(Math.abs(fit.zoom - expectedZoom) < 1e-12);
+  const leftScreen = api.VIEW.width / 2 + fit.panX + (api.VIEW.x0 - api.VIEW.width / 2) * fit.zoom;
+  const rightScreen =
+    api.VIEW.width / 2 + fit.panX + (api.VIEW.x1 - api.VIEW.width / 2) * fit.zoom;
+  assert.ok(Math.abs(leftScreen - 48) < 1e-9);
+  assert.ok(Math.abs(rightScreen - 1152) < 1e-9);
+
+  const scaled = freshState();
+  scaled.length = 125;
+  scaled.advanced.lengthMode = "scale";
+  api.setState(scaled);
+  const scaledFit = api.fittedViewState(scaled);
+  assert.equal(scaledFit.zoom, 1);
+  assert.equal(scaledFit.panX, 0);
+  assert.equal(scaledFit.panY, 0);
+  assert.match(source, /viewState = fittedViewState\(state\)/);
+});
+
+test("right-extension keeps the preview grid at an exact fixed world spacing", () => {
+  const first = freshState();
+  first.length = 55;
+  first.advanced.lengthMode = "extend";
+  api.setState(first);
+  const referenceStep = 1104 / api.GRID_COLUMN_COUNT;
+  assert.ok(Math.abs(api.gridWorldStep(first) - referenceStep) < 1e-12);
+
+  const second = freshState();
+  second.length = 115;
+  second.advanced.lengthMode = "extend";
+  api.setState(second);
+  assert.ok(Math.abs(api.gridWorldStep(second) - referenceStep) < 1e-12);
+  assert.match(source, /VIEW\.x0 \+ gridWorldStep\(state\)/);
+  assert.match(source, /new columns simply continue to the right/);
+});
+
+test("geometry and advanced controls use the requested order, labels, and ranges", () => {
+  const geometry = html.match(/<h2>Geometry<\/h2>[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(geometry, /<span>Strand width<\/span>/);
+  assert.doesNotMatch(geometry, /Strand weight|lengthModeControl/);
+  assert.ok(geometry.indexOf('for="weightControl"') < geometry.indexOf('for="basePairWidthControl"'));
+  assert.match(geometry, /id="daughterSpacingControl"[^>]*max="800"/);
+  assert.match(geometry, /id="doubleStrandHeightControl"[^>]*max="160"/);
+
+  const advanced = html.match(/<details class="rs-options-menu" id="advancedOptions">[\s\S]*?<\/details>/)?.[0] || "";
+  assert.equal((advanced.match(/class="rs-options-group/g) || []).length, 4);
+  assert.match(advanced, /<label for="lengthModeControl">Genome resizing<\/label>/);
+  assert.ok(advanced.indexOf("lengthModeControl") < advanced.indexOf("basePairTransitionControl"));
+  assert.match(advanced, /Rescale chromosome/);
+  assert.match(advanced, /Extend right end/);
+
+  const rangeRule = css.match(/\.rs-options-range\s*\{[^}]*\}/)?.[0] || "";
+  const selectRule = css.match(/\.rs-options-select\s*\{[^}]*\}/)?.[0] || "";
+  assert.doesNotMatch(rangeRule, /border-top/);
+  assert.doesNotMatch(selectRule, /border-top/);
+  assert.match(css, /\.rs-options-group \+ \.rs-options-group\s*\{[^}]*border-top:/s);
+});
+
+test("vertical aspect now spans the wider symmetric range", () => {
+  assert.equal(api.aspectFactorFromSlider("y", -100), 0.1);
+  assert.equal(api.aspectFactorFromSlider("y", 0), 1);
+  assert.equal(api.aspectFactorFromSlider("y", 100), 10);
+  const low = freshState();
+  low.advanced.aspectY = 0.001;
+  api.normaliseStateSchema(low);
+  assert.equal(low.advanced.aspectY, 0.1);
+  const high = freshState();
+  high.advanced.aspectY = 100;
+  api.normaliseStateSchema(high);
+  assert.equal(high.advanced.aspectY, 10);
+});
+
+test("Menu About opens a centred blurred project dialog with attribution", () => {
+  const menu = html.match(/<div class="rs-project-menu-panel"[\s\S]*?<\/div>\s*<\/div>/)?.[0] || "";
+  assert.match(menu, /id="aboutMenuButton"/);
+  assert.match(menu, /aria-haspopup="dialog"/);
+  assert.match(menu, /aria-controls="aboutDialog"/);
+  assert.match(menu, /<span>About<\/span>/);
+
+  const about = html.match(/<div class="rs-about-overlay" id="aboutDialog"[\s\S]*?<\/section>\s*<\/div>/)?.[0] || "";
+  assert.match(about, /hidden aria-hidden="true"/);
+  assert.match(about, /assets\/img\/logo2\.png/);
+  assert.match(about, /browser-based visual studio/);
+  assert.match(about, /Francisco Berkemeier/);
+  assert.match(about, /mailto:fp409@cam\.ac\.uk/);
+  assert.match(css, /\.rs-about-overlay\s*\{[^}]*place-items:\s*center[^}]*backdrop-filter:\s*blur/s);
+  assert.match(source, /function openAboutDialog\(\)/);
+  assert.match(source, /function closeAboutDialog\(/);
+  assert.match(source, /elements\.aboutMenuButton\.addEventListener\("click", openAboutDialog\)/);
+  assert.match(source, /elements\.aboutMenuButton\?\.setAttribute\("aria-expanded", "true"\)/);
+  assert.match(source, /if \(event\.target === elements\.aboutDialog\) closeAboutDialog\(\)/);
 });
