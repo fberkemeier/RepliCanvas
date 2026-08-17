@@ -16,10 +16,14 @@
 
   const EPSILON = 0.0001;
   const APP_VERSION = "1.0.0";
-  const CONFIG_FORMAT = "RepliSketch";
+  const CONFIG_FORMAT = "RepliCanvas";
+  const LEGACY_CONFIG_FORMAT = ["Repli", "Sketch"].join("");
   const CONFIG_SCHEMA_VERSION = 1;
   const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
-  const TEMPLATE_CACHE_KEY = "replisketch-template-v1";
+  const TEMPLATE_CACHE_KEY = "replicanvas-template-v1";
+  const LEGACY_TEMPLATE_CACHE_KEY = ["repli", "sketch-template-v1"].join("");
+  const THEME_CACHE_KEY = "replicanvas-theme";
+  const LEGACY_THEME_CACHE_KEY = ["repli", "sketch-theme"].join("");
   const TEMPLATE_CACHE_DELAY_MS = 300;
   const HEX_COLOUR = /^#[\da-f]{6}$/i;
   const BASE_PAIRS_PER_TURN = 10;
@@ -140,7 +144,7 @@
       grid: true,
       alwaysShowControls: true,
       snapToBasePairs: false,
-      dnaHandedness: "left",
+      dnaHandedness: "right",
       basePairTransition: "fade",
       lengthMode: "scale",
       includeExportBackground: false,
@@ -175,6 +179,7 @@
   let templateCacheTimer = 0;
   let templateCacheSuspended = false;
   let artworkStrokeScale = 1;
+  let artworkViewportScale = 1;
   const forkPlaybackClocks = new WeakMap();
 
   const byId = (id) => document.getElementById(id);
@@ -235,6 +240,24 @@
     } finally {
       artworkStrokeScale = previous;
     }
+  }
+
+  function withArtworkViewportScale(scale, callback) {
+    const previous = artworkViewportScale;
+    artworkViewportScale = Math.max(EPSILON, Number(scale) || 1);
+    try {
+      return callback();
+    } finally {
+      artworkViewportScale = previous;
+    }
+  }
+
+  function canvasViewportScale() {
+    const bounds = elements.canvas?.getBoundingClientRect?.();
+    const width = Number(elements.canvas?.clientWidth) || Number(bounds?.width);
+    const height = Number(elements.canvas?.clientHeight) || Number(bounds?.height);
+    if (!(width > 0) || !(height > 0)) return 1;
+    return Math.max(EPSILON, Math.min(width / VIEW.width, height / VIEW.height));
   }
 
   function artworkStrokeAttributes(width) {
@@ -301,6 +324,17 @@
       if (width !== null) element.setAttribute("stroke-width", width);
       element.removeAttribute("data-rs-stroke-width");
     });
+    root?.querySelectorAll?.("[data-rs-separator-center-x][data-rs-separator-native-half-width]")
+      .forEach((element) => {
+        const center = Number(element.getAttribute("data-rs-separator-center-x"));
+        const halfWidth = Number(element.getAttribute("data-rs-separator-native-half-width"));
+        if (Number.isFinite(center) && Number.isFinite(halfWidth)) {
+          element.setAttribute("x1", precise(center - halfWidth));
+          element.setAttribute("x2", precise(center + halfWidth));
+        }
+        element.removeAttribute("data-rs-separator-center-x");
+        element.removeAttribute("data-rs-separator-native-half-width");
+      });
     return root;
   }
 
@@ -467,7 +501,10 @@
   }
 
   function crossoverAIsOver(index, sourceState = state) {
-    const rightHandedAOver = Math.trunc(Number(index) || 0) % 2 === 0;
+    // The original labels were reversed. In the corrected convention, the
+    // first crossover has strand B above for a right-handed helix and strand A
+    // above for a left-handed helix.
+    const rightHandedAOver = Math.trunc(Number(index) || 0) % 2 !== 0;
     return dnaHandedness(sourceState) === "right"
       ? rightHandedAOver
       : !rightHandedAOver;
@@ -787,7 +824,7 @@
 
   function invalidConfiguration(message = "invalid or damaged file") {
     const error = new Error(message);
-    error.name = "RepliSketchConfigurationError";
+    error.name = "RepliCanvasConfigurationError";
     return error;
   }
 
@@ -935,12 +972,16 @@
     } catch {
       throw invalidConfiguration();
     }
-    if (!isPlainRecord(documentState) || documentState.format !== CONFIG_FORMAT) {
-      throw invalidConfiguration("not a RepliSketch configuration");
+    const legacyFormat = isPlainRecord(documentState) && documentState.format === LEGACY_CONFIG_FORMAT;
+    if (
+      !isPlainRecord(documentState) ||
+      (documentState.format !== CONFIG_FORMAT && !legacyFormat)
+    ) {
+      throw invalidConfiguration("not a RepliCanvas configuration");
     }
     if (!Number.isInteger(documentState.schemaVersion)) throw invalidConfiguration("schema version is missing");
     if (documentState.schemaVersion > CONFIG_SCHEMA_VERSION) {
-      throw invalidConfiguration("this configuration was created by a newer RepliSketch version");
+      throw invalidConfiguration("this configuration was created by a newer RepliCanvas version");
     }
     if (documentState.schemaVersion !== CONFIG_SCHEMA_VERSION) {
       throw invalidConfiguration("unsupported configuration version");
@@ -951,21 +992,32 @@
     ) {
       throw invalidConfiguration("app version is invalid");
     }
-    return sanitiseConfigurationState(documentState.state);
+    let configurationState = documentState.state;
+    if (legacyFormat && isPlainRecord(configurationState)) {
+      configurationState = JSON.parse(JSON.stringify(configurationState));
+      const legacyHandedness = configurationState.advanced?.dnaHandedness;
+      if (DNA_HANDEDNESS_MODES.has(legacyHandedness)) {
+        configurationState.advanced.dnaHandedness = legacyHandedness === "left" ? "right" : "left";
+      }
+    }
+    return sanitiseConfigurationState(configurationState);
   }
 
   function cachedTemplateState() {
     try {
       if (typeof localStorage === "undefined") return null;
-      const cached = localStorage.getItem(TEMPLATE_CACHE_KEY);
-      if (!cached) return null;
-      return parseConfigurationText(cached);
-    } catch {
-      try {
-        localStorage?.removeItem?.(TEMPLATE_CACHE_KEY);
-      } catch {
-        // A damaged or inaccessible cache must never prevent the app opening.
+      for (const key of [TEMPLATE_CACHE_KEY, LEGACY_TEMPLATE_CACHE_KEY]) {
+        const cached = localStorage.getItem(key);
+        if (!cached) continue;
+        try {
+          return parseConfigurationText(cached);
+        } catch {
+          localStorage.removeItem(key);
+        }
       }
+      return null;
+    } catch {
+      // A damaged or inaccessible cache must never prevent the app opening.
       return null;
     }
   }
@@ -2750,6 +2802,8 @@
     const instant = transitionMode === "instant";
     const pairOpacity = grows || instant ? 1 : transition;
     const growth = grows ? transition : 1;
+    const colourMode = basePairColorMode();
+    const splitColourMode = colourMode !== "single";
     const [firstColor, secondColor] = basePairLineColors(
       firstRole,
       secondRole,
@@ -2780,7 +2834,28 @@
         toY
       )}" ${afterCoordinates}stroke="${colour}" ${attributes} stroke-linecap="${cap}"/>`;
 
-    if (!grows && firstColor === secondColor) {
+    const contourSeparator = (atY, role) => {
+      if (!contourOn || !splitColourMode) return "";
+      // The visible outer border has contourThickness() pixels on each side of
+      // the coloured rung. Draw the internal boundary with that same stroke
+      // thickness and span the full outside width, so the centre separator is
+      // visually identical to the contour around the pair. Horizontal aspect
+      // is compensated because the separator itself sits inside the artwork
+      // transform while all stroke widths are non-scaling.
+      const nativeHalfWidth = contourStrokeWidth(width) / (2 * Math.max(EPSILON, artworkScaleX()));
+      const halfWidth = nativeHalfWidth / Math.max(EPSILON, artworkViewportScale);
+      return `<line data-rs-contour="true" data-rs-base-pair-separator="${role}" data-rs-separator-center-x="${precise(
+        x
+      )}" data-rs-separator-native-half-width="${precise(nativeHalfWidth)}" x1="${precise(
+        x - halfWidth
+      )}" y1="${precise(atY)}" x2="${precise(x + halfWidth)}" y2="${precise(
+        atY
+      )}" stroke="${contourColour}" ${artworkStrokeAttributes(
+        contourThickness()
+      )} stroke-linecap="butt"/>`;
+    };
+
+    if (!grows && !splitColourMode) {
       const contour = contourOn
         ? line(
             segment.firstY,
@@ -2816,9 +2891,8 @@
         );
       } else {
         // While the two halves are growing, keep the outer ends rounded but
-        // the advancing fronts flat. Once they meet, replace both halves with
-        // one continuous contour so no dark seam or circular bulge appears at
-        // the colour boundary.
+        // the advancing fronts flat. The explicit front separators below keep
+        // each coloured half fully outlined until the two fronts meet.
         contour = `${line(
           segment.firstY,
           firstInnerY,
@@ -2851,9 +2925,20 @@
       }
     }
 
+    const separator = splitColourMode
+      ? completeJoin
+        ? contourSeparator(midpoint, "midpoint")
+        : `${contourSeparator(firstInnerY, "first-front")}${contourSeparator(
+            secondInnerY,
+            "second-front"
+          )}`
+      : "";
+
     // Draw each coloured half from its connected strand towards the midpoint.
     // Butt caps preserve an exact, flat colour boundary where the halves meet;
     // separate zero-length round-capped strokes restore rounded outer ends.
+    // The separator is drawn last so its thickness remains visible and equal to
+    // the outer cartoon contour in both complete and growing configurations.
     return `<g data-pair="${firstBase}-${secondBase}" data-transition="${transitionMode}" opacity="${precise(
       pairOpacity
     )}">
@@ -2870,6 +2955,7 @@
       ${line(segment.secondY, segment.secondY - capNudge, secondColor, strokeAttributes, "round", {
         beforeCoordinates: 'data-cap="second" ',
       })}
+      ${separator}
     </g>`;
   }
 
@@ -3599,10 +3685,12 @@
       ? model.origins.find((origin) => origin.id === state.selectedOriginId)
       : null;
     elements.canvas.classList.toggle("rs-show-all-controls", state.advanced.alwaysShowControls);
-    const liveArtwork = withArtworkStrokeScale(viewState.zoom, () => artworkMarkup(model));
+    const liveArtwork = withArtworkStrokeScale(viewState.zoom, () =>
+      withArtworkViewportScale(canvasViewportScale(), () => artworkMarkup(model))
+    );
 
     elements.canvas.innerHTML = `
-      <title id="dnaCanvasTitle">RepliSketch DNA replication diagram</title>
+      <title id="dnaCanvasTitle">RepliCanvas DNA replication diagram</title>
       <desc id="dnaCanvasDescription">A vector diagram of a ${basePairCount()} base-pair DNA molecule with ${
         state.origins.length
       } replication origins, ${model.activeForkCount} active forks, and ${state.cuts.length} strand breaks.</desc>
@@ -5224,7 +5312,7 @@
     const height = Math.max(1, bounds.height + exportPadding * 2);
     const svg = document.createElementNS(namespace, "svg");
     const title = document.createElementNS(namespace, "title");
-    title.textContent = "DNA replication diagram created with RepliSketch";
+    title.textContent = "DNA replication diagram created with RepliCanvas";
     svg.setAttribute("xmlns", namespace);
     svg.setAttribute("viewBox", `${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}`);
     svg.setAttribute("width", fixed(width));
@@ -5287,14 +5375,14 @@
   }
 
   function exportFilename(extension) {
-    return `replisketch-${basePairCount()}bp-${state.origins.length}-origins.${extension}`;
+    return `replicanvas-${basePairCount()}bp-${state.origins.length}-origins.${extension}`;
   }
 
   function saveConfiguration() {
     const source = `${JSON.stringify(configurationDocument(), null, 2)}\n`;
     downloadBlob(
       new Blob([source], { type: "application/json;charset=utf-8" }),
-      exportFilename("replisketch.json")
+      exportFilename("replicanvas.json")
     );
     setStatus("Configuration saved");
   }
@@ -5381,7 +5469,7 @@
     const pageWidth = Math.ceil(exported.width);
     const pageHeight = Math.ceil(exported.height);
     frame.className = "rs-print-frame";
-    frame.title = "RepliSketch PDF export";
+    frame.title = "RepliCanvas PDF export";
     document.body.appendChild(frame);
 
     const documentForPrint = frame.contentDocument;
@@ -5477,12 +5565,14 @@
       const y = Math.min(transformedTop, transformedBottom) - EXPORT_PADDING;
       const width = Math.abs(transformedRight - transformedLeft) + EXPORT_PADDING * 2;
       const height = Math.abs(transformedBottom - transformedTop) + EXPORT_PADDING * 2;
-      const videoArtwork = withArtworkStrokeScale(1, () => artworkMarkup(model));
+      const videoArtwork = withArtworkStrokeScale(1, () =>
+        withArtworkViewportScale(1, () => artworkMarkup(model))
+      );
       const source = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${fixed(x)} ${fixed(y)} ${fixed(width)} ${fixed(height)}" width="${fixed(
         width
       )}" height="${fixed(height)}" preserveAspectRatio="xMidYMid meet">
-  <title>Animated DNA replication diagram created with RepliSketch</title>
+  <title>Animated DNA replication diagram created with RepliCanvas</title>
   <g aria-label="DNA molecule" transform="${artworkAspectTransform(videoState)}">${videoArtwork}</g>
 </svg>`;
       return { source, width, height, model };
@@ -5554,7 +5644,7 @@
     if (!downloadWindow) return null;
     try {
       downloadWindow.opener = null;
-      downloadWindow.document.title = "Generating RepliSketch animation";
+      downloadWindow.document.title = "Generating RepliCanvas animation";
       downloadWindow.document.body.innerHTML =
         '<main style="font:14px system-ui,sans-serif;padding:28px;line-height:1.5">' +
         '<strong>Generating animation…</strong>' +
@@ -5585,15 +5675,15 @@
     if (downloadWindow && !downloadWindow.closed) {
       try {
         const doc = downloadWindow.document;
-        doc.title = "RepliSketch MP4 ready";
+        doc.title = "RepliCanvas MP4 ready";
         doc.body.innerHTML =
           '<main style="font:14px system-ui,sans-serif;padding:28px;line-height:1.5;max-width:520px">' +
-          '<strong>Your RepliSketch animation is ready.</strong>' +
+          '<strong>Your RepliCanvas animation is ready.</strong>' +
           '<p>Select the button below to complete a browser-recognised download.</p>' +
-          '<p><a id="replisketch-video-download" style="display:inline-block;padding:9px 15px;border-radius:7px;background:#067e94;color:white;text-decoration:none;font-weight:700">Download MP4</a></p>' +
+          '<p><a id="replicanvas-video-download" style="display:inline-block;padding:9px 15px;border-radius:7px;background:#067e94;color:white;text-decoration:none;font-weight:700">Download MP4</a></p>' +
           '<p style="opacity:.65">You may close this tab after the download begins.</p>' +
           '</main>';
-        const link = doc.getElementById("replisketch-video-download");
+        const link = doc.getElementById("replicanvas-video-download");
         link.href = videoDownloadUrl;
         link.download = filename;
         link.type = "video/mp4";
@@ -6058,7 +6148,8 @@
 
   function storedThemeMode() {
     try {
-      const stored = typeof localStorage !== "undefined" ? localStorage.getItem("replisketch-theme") : null;
+      if (typeof localStorage === "undefined") return "system";
+      const stored = localStorage.getItem(THEME_CACHE_KEY) ?? localStorage.getItem(LEGACY_THEME_CACHE_KEY);
       return ["system", "light", "dark"].includes(stored) ? stored : "system";
     } catch {
       return "system";
@@ -6090,7 +6181,7 @@
     }
     if (persist) {
       try {
-        localStorage.setItem("replisketch-theme", themeMode);
+        localStorage.setItem(THEME_CACHE_KEY, themeMode);
       } catch {
         // Theme persistence is optional in restricted browsing contexts.
       }
@@ -6642,7 +6733,7 @@
 
   function collectElements() {
     [
-      "replisketch-app",
+      "replicanvas-app",
       "dnaCanvas",
       "canvasFrame",
       "canvasLegend",
@@ -6751,7 +6842,7 @@
       "includeExportBackgroundToggle",
       "contourToggle",
     ].forEach((id) => {
-      const key = id === "dnaCanvas" ? "canvas" : id === "replisketch-app" ? "app" : id;
+      const key = id === "dnaCanvas" ? "canvas" : id === "replicanvas-app" ? "app" : id;
       elements[key] = byId(id);
     });
   }

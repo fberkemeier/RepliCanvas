@@ -4,14 +4,14 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const sourcePath = path.join(__dirname, "..", "assets", "js", "replisketch.js");
-const cssPath = path.join(__dirname, "..", "assets", "css", "replisketch.css");
+const sourcePath = path.join(__dirname, "..", "assets", "js", "replicanvas.js");
+const cssPath = path.join(__dirname, "..", "assets", "css", "replicanvas.css");
 const htmlPath = path.join(__dirname, "..", "index.html");
 const source = fs.readFileSync(sourcePath, "utf8");
 const css = fs.readFileSync(cssPath, "utf8");
 const html = fs.readFileSync(htmlPath, "utf8");
 const testApi = `
-  globalThis.__replisketchTest = {
+  globalThis.__replicanvasTest = {
     VIEW,
     TEMPLATE_CACHE_KEY,
     BASE_PLAYBACK_SPEED,
@@ -262,7 +262,7 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 new vm.Script(instrumented, { filename: sourcePath }).runInContext(sandbox);
-const api = sandbox.__replisketchTest;
+const api = sandbox.__replicanvasTest;
 
 function freshState() {
   const state = api.makeDefaultState();
@@ -2908,29 +2908,29 @@ test("MP4 export asks for a filename first and falls back to a browser download 
     click() {},
   };
   sandbox.URL = {
-    createObjectURL() { return "blob:replisketch-video"; },
+    createObjectURL() { return "blob:replicanvas-video"; },
     revokeObjectURL() {},
   };
   api.setElements({ videoSaveLink: link });
 
-  const selected = await api.requestAnimationSaveHandle("replisketch.mp4");
+  const selected = await api.requestAnimationSaveHandle("replicanvas.mp4");
   assert.equal(selected.handle, handle);
   assert.equal(selected.cancelled, false);
   assert.equal(selected.supported, true);
-  assert.equal(pickerOptions.suggestedName, "replisketch.mp4");
+  assert.equal(pickerOptions.suggestedName, "replicanvas.mp4");
   assert.equal(Array.from(pickerOptions.types[0].accept["video/mp4"]).join(","), ".mp4");
 
   const blob = new Blob(["mp4"], { type: "video/mp4" });
-  assert.equal(await api.saveMp4Blob(blob, "replisketch.mp4", handle), "file");
+  assert.equal(await api.saveMp4Blob(blob, "replicanvas.mp4", handle), "file");
   assert.equal(writes[0], blob);
   assert.equal(writes[1], "closed");
 
   delete sandbox.window.showSaveFilePicker;
   let clicked = 0;
   link.click = () => { clicked += 1; };
-  assert.equal(api.saveMp4Blob(blob, "replisketch.mp4"), "download");
-  assert.equal(link.href, "blob:replisketch-video");
-  assert.equal(link.download, "replisketch.mp4");
+  assert.equal(api.saveMp4Blob(blob, "replicanvas.mp4"), "download");
+  assert.equal(link.href, "blob:replicanvas-video");
+  assert.equal(link.download, "replicanvas.mp4");
   assert.equal(link.hidden, false);
   assert.equal(clicked, 0, "automatic clicks after asynchronous encoding are intentionally avoided");
   assert.match(source, /showSaveFilePicker/);
@@ -3085,9 +3085,9 @@ test("ruler axis continues across the viewport without extending genomic ticks",
 });
 
 test("statusbar exposes compact project resources, version, selection, and latest action", () => {
-  assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliSketch"/);
-  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch#readme"[\s\S]*aria-label="Documentation"/);
-  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliSketch\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
+  assert.match(html, /class="rs-project-link"[\s\S]*href="https:\/\/github\.com\/fberkemeier\/RepliCanvas"/);
+  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliCanvas#readme"[\s\S]*aria-label="Documentation"/);
+  assert.match(html, /href="https:\/\/github\.com\/fberkemeier\/RepliCanvas\/issues\/new"[\s\S]*aria-label="Raise an issue"/);
   assert.match(html, /class="rs-project-version">v1\.0\.0<\/span>/);
   assert.match(css, /--rs-project-blue:\s*#3c9ab7/);
   assert.match(css, /--rs-project-menu-blue:\s*#022851/);
@@ -3120,14 +3120,14 @@ test("statusbar exposes compact project resources, version, selection, and lates
 });
 
 test("browser metadata and configuration file actions are exposed accessibly", () => {
-  assert.match(html, /<title>RepliSketch<\/title>/);
+  assert.match(html, /<title>RepliCanvas<\/title>/);
   assert.match(html, /<link[^>]*rel="icon"[^>]*type="image\/png"[^>]*href="assets\/img\/logo_small\.png"/);
   assert.ok(fs.existsSync(path.join(__dirname, "..", "assets", "img", "logo_small.png")));
   assert.match(html, /id="saveConfigButton"[^>]*aria-label="Save configuration"/);
   assert.match(html, /id="loadConfigButton"[^>]*aria-label="Load configuration"/);
   assert.match(
     html,
-    /id="configFileInput"[^>]*type="file"[^>]*accept="\.replisketch\.json,\.json,application\/json"[^>]*hidden/
+    /id="configFileInput"[^>]*type="file"[^>]*accept="\.replicanvas\.json,\.json,application\/json"[^>]*hidden/
   );
 });
 
@@ -3154,7 +3154,7 @@ test("versioned configuration files round-trip all document settings", () => {
   const documentState = api.configurationDocument();
   const loaded = api.parseConfigurationText(JSON.stringify(documentState));
 
-  assert.equal(documentState.format, "RepliSketch");
+  assert.equal(documentState.format, "RepliCanvas");
   assert.equal(documentState.schemaVersion, 1);
   assert.equal(documentState.appVersion, "1.0.0");
   assert.equal(loaded.length, 135);
@@ -3176,6 +3176,34 @@ test("versioned configuration files round-trip all document settings", () => {
   assert.equal(loaded.playing, false);
 });
 
+test("legacy configuration documents retain their visual handedness after the rename", () => {
+  const state = freshState();
+  state.advanced.dnaHandedness = "left";
+  api.setState(state);
+  const legacyDocument = api.configurationDocument();
+  legacyDocument.format = ["Repli", "Sketch"].join("");
+  legacyDocument.state.advanced.dnaHandedness = "left";
+
+  const migrated = api.parseConfigurationText(JSON.stringify(legacyDocument));
+  assert.equal(migrated.advanced.dnaHandedness, "right");
+});
+
+test("the application and distributable source use the RepliCanvas identity", () => {
+  const formerBrand = ["Repli", "Sketch"].join("");
+  const formerSlug = ["repli", "sketch"].join("");
+  assert.match(html, /<title>RepliCanvas<\/title>/);
+  assert.match(html, /https:\/\/fberkemeier\.github\.io\/RepliCanvas\//);
+  assert.match(html, /https:\/\/github\.com\/fberkemeier\/RepliCanvas/);
+  assert.match(source, /const CONFIG_FORMAT = "RepliCanvas"/);
+  assert.match(source, /const TEMPLATE_CACHE_KEY = "replicanvas-template-v1"/);
+  assert.doesNotMatch(html, new RegExp(formerBrand, "i"));
+  assert.doesNotMatch(require("node:fs").readFileSync(path.join(__dirname, "..", "README.md"), "utf8"), new RegExp(formerBrand, "i"));
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "assets", "js", "replicanvas.js")));
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "assets", "css", "replicanvas.css")));
+  assert.equal(fs.existsSync(path.join(__dirname, "..", "assets", "js", `${formerSlug}.js`)), false);
+  assert.equal(fs.existsSync(path.join(__dirname, "..", "assets", "css", `${formerSlug}.css`)), false);
+});
+
 test("configuration parsing rejects unsafe or structurally invalid documents", () => {
   const state = freshState();
   api.setState(state);
@@ -3189,7 +3217,7 @@ test("configuration parsing rejects unsafe or structurally invalid documents", (
   assert.throws(() => api.parseConfigurationText("not json"), /invalid or damaged file/);
   assert.throws(
     () => api.parseConfigurationText(sourceWith((documentState) => (documentState.schemaVersion = 2))),
-    /newer RepliSketch version/
+    /newer RepliCanvas version/
   );
   assert.throws(
     () =>
@@ -4454,7 +4482,7 @@ test("Menu exposes an accessible blurred About dialog with project identity and 
   assert.match(html, /id="aboutModal"[^>]*hidden/);
   assert.match(html, /role="dialog"[^>]*aria-modal="true"/);
   assert.match(html, /class="rs-about-logo"[^>]*src="assets\/img\/logo1\.png"/);
-  assert.doesNotMatch(html, /<h2[^>]*>\s*RepliSketch\s*<\/h2>/);
+  assert.doesNotMatch(html, /<h2[^>]*>\s*RepliCanvas\s*<\/h2>/);
   assert.match(html, /© 2026 Francisco Berkemeier|&copy; 2026 Francisco Berkemeier/);
   assert.match(html, /mailto:fp409@cam\.ac\.uk/);
   assert.match(css, /\.rs-about-backdrop\s*\{[\s\S]*?backdrop-filter:\s*blur\(9px\)/);
@@ -4684,7 +4712,7 @@ test("the current template is cached across browser sessions and restored fitted
   const cachedText = values.get(api.TEMPLATE_CACHE_KEY);
   assert.ok(cachedText);
   const cachedDocument = JSON.parse(cachedText);
-  assert.equal(cachedDocument.format, "RepliSketch");
+  assert.equal(cachedDocument.format, "RepliCanvas");
   assert.equal(cachedDocument.state.playing, false);
 
   const restored = api.cachedTemplateState();
@@ -4706,7 +4734,7 @@ test("the current template is cached across browser sessions and restored fitted
   assert.match(source, /persistTemplateCacheNow\(\);[\s\S]*?URL\.revokeObjectURL/);
 });
 
-test("DNA handedness defaults to right-handed and reverses crossover depth and cutouts", () => {
+test("DNA chirality defaults to right-handed and reverses crossover depth and cutouts", () => {
   const state = freshState();
   state.advanced.strandModel = "standard";
   state.advanced.crossoverGaps = true;
@@ -4715,29 +4743,29 @@ test("DNA handedness defaults to right-handed and reverses crossover depth and c
   const model = api.getReplicationModelAtTravel(0, state);
   const firstSite = api.crossoverSites(state)[0];
 
-  assert.equal(api.dnaHandedness(state), "left");
+  assert.equal(api.dnaHandedness(state), "right");
   assert.equal(api.crossoverAIsOver(firstSite.index, state), false);
   assert.equal(api.isUnderpassGap(firstSite.x, "a", model), true);
   assert.equal(api.isUnderpassGap(firstSite.x, "b", model), false);
 
-  state.advanced.dnaHandedness = "right";
-  api.setState(state);
-  const rightModel = api.getReplicationModelAtTravel(0, state);
-  assert.equal(api.dnaHandedness(state), "right");
-  assert.equal(api.crossoverAIsOver(firstSite.index, state), true);
-  assert.equal(api.isUnderpassGap(firstSite.x, "a", rightModel), false);
-  assert.equal(api.isUnderpassGap(firstSite.x, "b", rightModel), true);
-
   state.advanced.dnaHandedness = "left";
+  api.setState(state);
+  const leftModel = api.getReplicationModelAtTravel(0, state);
+  assert.equal(api.dnaHandedness(state), "left");
+  assert.equal(api.crossoverAIsOver(firstSite.index, state), true);
+  assert.equal(api.isUnderpassGap(firstSite.x, "a", leftModel), false);
+  assert.equal(api.isUnderpassGap(firstSite.x, "b", leftModel), true);
+
+  state.advanced.dnaHandedness = "right";
   api.setState(state);
   const documentState = api.configurationDocument();
   const restored = api.parseConfigurationText(JSON.stringify(documentState));
-  assert.equal(restored.advanced.dnaHandedness, "left");
+  assert.equal(restored.advanced.dnaHandedness, "right");
 
   const dropdownGroup = html.match(/<div class="rs-options-group rs-options-dropdown-group">([\s\S]*?)<\/div>\s*<div class="rs-options-group rs-options-slider-group">/)?.[1] || "";
   assert.match(dropdownGroup, /for="dnaHandednessControl">DNA handedness/);
-  assert.match(dropdownGroup, /<option value="left" selected>Left-handed helix<\/option>/);
-  assert.match(dropdownGroup, /<option value="right">Right-handed helix<\/option>/);
+  assert.match(dropdownGroup, /<option value="right" selected>Right-handed helix<\/option>/);
+  assert.match(dropdownGroup, /<option value="left">Left-handed helix<\/option>/);
   assert.match(source, /elements\.dnaHandednessControl\.disabled = modelName !== "standard"/);
 });
 
@@ -4768,9 +4796,41 @@ test("optional cartoon contours cover strands and base pairs in every compatible
     secondBase: "T",
   });
   assert.match(pair, /data-rs-contour="true"/);
-  assert.equal((pair.match(/data-rs-contour="true"/g) || []).length, 1);
+  assert.equal((pair.match(/data-rs-contour="true"/g) || []).length, 2);
+  assert.match(pair, /data-rs-base-pair-separator="midpoint"/);
+  assert.match(pair, /data-rs-base-pair-separator="midpoint"[^>]*stroke-width="2\.0"[^>]*data-rs-stroke-width="2\.0"/);
   assert.match(pair, /data-half="first"/);
   assert.match(pair, /data-half="second"/);
+
+  state.advanced.basePairTransition = "grow";
+  api.setState(state);
+  const growingPair = api.renderBasePairLine(100, 20, 60, 0.4, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(growingPair, /data-rs-base-pair-separator="first-front"/);
+  assert.match(growingPair, /data-rs-base-pair-separator="second-front"/);
+  assert.doesNotMatch(growingPair, /data-rs-base-pair-separator="midpoint"/);
+  assert.equal((growingPair.match(/data-rs-base-pair-separator=/g) || []).length, 2);
+
+  const joinedGrowingPair = api.renderBasePairLine(100, 20, 60, 1, {
+    firstRole: "a",
+    secondRole: "b",
+    firstBase: "A",
+    secondBase: "T",
+  });
+  assert.match(joinedGrowingPair, /data-rs-base-pair-separator="midpoint"/);
+  assert.equal((joinedGrowingPair.match(/data-rs-base-pair-separator=/g) || []).length, 1);
+
+  state.basePairColorMode = "single";
+  api.setState(state);
+  const singleColourGrowingPair = api.renderBasePairLine(100, 20, 60, 0.4);
+  assert.doesNotMatch(singleColourGrowingPair, /data-rs-base-pair-separator=/);
+  state.basePairColorMode = "bases";
+  state.advanced.basePairTransition = "fade";
+  api.setState(state);
 
   for (const modelName of ["standard", "elegant", "minimal"]) {
     state.advanced.strandModel = modelName;
@@ -4834,7 +4894,7 @@ test("animation completion produces a verified MP4 file or a browser-recognised 
   };
   api.setElements({ videoSaveLink: inAppLink });
   sandbox.URL = {
-    createObjectURL() { return "blob:recognised-replisketch-mp4"; },
+    createObjectURL() { return "blob:recognised-replicanvas-mp4"; },
     revokeObjectURL() {},
   };
   assert.equal(await api.saveMp4Blob(blob, "animation.mp4", handle), "file");
@@ -4848,7 +4908,7 @@ test("animation completion produces a verified MP4 file or a browser-recognised 
     title: "",
     body: { innerHTML: "", dataset: {} },
     getElementById(id) {
-      assert.equal(id, "replisketch-video-download");
+      assert.equal(id, "replicanvas-video-download");
       return downloadLink;
     },
   };
@@ -4857,7 +4917,7 @@ test("animation completion produces a verified MP4 file or a browser-recognised 
     api.saveMp4Blob(blob, "animation.mp4", null, downloadWindow),
     "download"
   );
-  assert.equal(downloadLink.href, "blob:recognised-replisketch-mp4");
+  assert.equal(downloadLink.href, "blob:recognised-replicanvas-mp4");
   assert.equal(downloadLink.download, "animation.mp4");
   assert.equal(downloadLink.type, "video/mp4");
   assert.equal(downloadLink.clicked, 0, "the browser download waits for a real trusted user click");

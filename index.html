@@ -8,19 +8,19 @@
       name="description"
       content="Create publication-ready figures and videos of DNA replication in the browser."
     />
-    <link rel="canonical" href="https://fberkemeier.github.io/RepliSketch/" />
+    <link rel="canonical" href="https://fberkemeier.github.io/RepliCanvas/" />
     <link rel="icon" type="image/png" href="assets/img/logo_small.png" />
-    <title>RepliSketch</title>
-    <link rel="stylesheet" href="assets/css/replisketch.css" />
+    <title>RepliCanvas</title>
+    <link rel="stylesheet" href="assets/css/replicanvas.css" />
     <!-- Mediabunny 1.51.0 (MPL-2.0); license: assets/vendor/MEDIABUNNY-LICENSE.txt -->
     <script defer src="assets/vendor/mediabunny-1.51.0.min.js"></script>
-    <script defer src="assets/js/replisketch.js"></script>
+    <script defer src="assets/js/replicanvas.js"></script>
   </head>
   <body>
-    <div class="rs-app" id="replisketch-app">
+    <div class="rs-app" id="replicanvas-app">
       <header class="rs-topbar">
         <div class="rs-brand">
-          <img class="rs-brand-logo" src="assets/img/logo2.png" alt="RepliSketch" />
+          <img class="rs-brand-logo" src="assets/img/logo2.png" alt="RepliCanvas" />
         </div>
 
         <div class="rs-top-actions" aria-label="Document actions">
@@ -60,8 +60,8 @@
           <input
             id="configFileInput"
             type="file"
-            accept=".replisketch.json,.json,application/json"
-            aria-label="Choose a RepliSketch configuration"
+            accept=".replicanvas.json,.json,application/json"
+            aria-label="Choose a RepliCanvas configuration"
             hidden
           />
           <button
@@ -118,15 +118,15 @@
               </svg>
             </button>
             <div class="rs-project-menu-panel" id="projectMenu" role="menu" hidden>
-              <a href="https://github.com/fberkemeier/RepliSketch" target="_blank" rel="noopener noreferrer" role="menuitem">
+              <a href="https://github.com/fberkemeier/RepliCanvas" target="_blank" rel="noopener noreferrer" role="menuitem">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.64 0 8.13c0 3.59 2.29 6.64 5.47 7.71.4.08.55-.18.55-.39 0-.19-.01-.83-.01-1.51-2.01.38-2.53-.5-2.69-.96-.09-.23-.48-.96-.82-1.15-.28-.15-.68-.53-.01-.54.63-.01 1.08.59 1.23.83.72 1.23 1.87.88 2.33.67.07-.53.28-.88.51-1.08-1.78-.21-3.64-.91-3.64-4.02 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.54 7.54 0 0 1 8 3.91c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.12-1.87 3.81-3.65 4.02.29.25.54.74.54 1.5 0 1.08-.01 1.95-.01 2.22 0 .21.15.47.55.39A8.16 8.16 0 0 0 16 8.13C16 3.64 12.42 0 8 0Z" /></svg>
                 <span>GitHub</span>
               </a>
-              <a href="https://github.com/fberkemeier/RepliSketch#readme" target="_blank" rel="noopener noreferrer" role="menuitem">
+              <a href="https://github.com/fberkemeier/RepliCanvas#readme" target="_blank" rel="noopener noreferrer" role="menuitem">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 5.5A3.5 3.5 0 0 1 7 2h5v18H7a3.5 3.5 0 0 0-3.5 2V5.5Zm17 0A3.5 3.5 0 0 0 17 2h-5v18h5a3.5 3.5 0 0 1 3.5 2V5.5Z" /></svg>
                 <span>Documentation</span>
               </a>
-              <a href="https://github.com/fberkemeier/RepliSketch/issues/new" target="_blank" rel="noopener noreferrer" role="menuitem">
+              <a href="https://github.com/fberkemeier/RepliCanvas/issues/new" target="_blank" rel="noopener noreferrer" role="menuitem">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.5 15.5A7 7 0 1 1 15.5 15.5c-.8.65-1.2 1.45-1.25 2.5h-4.5c-.05-1.05-.45-1.85-1.25-2.5Z" /></svg>
                 <span>Raise an issue</span>
               </a>
@@ -148,7 +148,7 @@
       </header>
 
       <div class="rs-body">
-        <aside class="rs-sidebar" aria-label="RepliSketch controls">
+        <aside class="rs-sidebar" aria-label="RepliCanvas controls">
           <section class="rs-control-section rs-compact-section">
             <div class="rs-section-heading">
               <h2>Controls</h2>
@@ -368,8 +368,8 @@
                   <div class="rs-select-control rs-compact-select rs-options-select">
                     <label for="dnaHandednessControl">DNA chirality</label>
                     <select id="dnaHandednessControl">
-                      <option value="left" selected>Left-handed helix</option>
-                      <option value="right">Right-handed helix</option>
+                      <option value="right" selected>Right-handed helix</option>
+                      <option value="left">Left-handed helix</option>
                     </select>
                   </div>
                   <div class="rs-select-control rs-compact-select rs-options-select">
@@ -504,12 +504,12 @@
               <span id="statusMessage">Ready</span>
               <a class="rs-video-save-link" id="videoSaveLink" type="video/mp4" hidden>Download MP4</a>
             </div>
-            <nav class="rs-project-meta rs-status-project-meta" aria-label="RepliSketch project links">
+            <nav class="rs-project-meta rs-status-project-meta" aria-label="RepliCanvas project links">
               <span class="rs-project-version">v1.0.0</span>
               <div class="rs-project-links">
                 <a
                   class="rs-project-link"
-                  href="https://github.com/fberkemeier/RepliSketch"
+                  href="https://github.com/fberkemeier/RepliCanvas"
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="GitHub repository"
@@ -524,7 +524,7 @@
                 </a>
                 <a
                   class="rs-project-link"
-                  href="https://github.com/fberkemeier/RepliSketch#readme"
+                  href="https://github.com/fberkemeier/RepliCanvas#readme"
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Documentation"
@@ -536,7 +536,7 @@
                 </a>
                 <a
                   class="rs-project-link"
-                  href="https://github.com/fberkemeier/RepliSketch/issues/new"
+                  href="https://github.com/fberkemeier/RepliCanvas/issues/new"
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Raise an issue"
@@ -561,13 +561,13 @@
         aria-labelledby="aboutTitle"
         aria-describedby="aboutDescription"
       >
-        <button class="rs-about-close" id="aboutCloseButton" type="button" aria-label="Close About RepliSketch">
+        <button class="rs-about-close" id="aboutCloseButton" type="button" aria-label="Close About RepliCanvas">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
-        <img class="rs-about-logo" src="assets/img/logo1.png" alt="RepliSketch" />
+        <img class="rs-about-logo" src="assets/img/logo1.png" alt="RepliCanvas" />
         <h2 id="aboutTitle">From replication dynamics to clear scientific visuals</h2>
         <p id="aboutDescription">
-          RepliSketch is an interactive visual studio for turning DNA replication dynamics into clear,
+          RepliCanvas is an interactive visual studio for turning DNA replication dynamics into clear,
           publication-ready figures and animations. Build replication programmes directly on the canvas,
           shape origins and forks through S phase, and export precise visuals for research, teaching and
           scientific communication.

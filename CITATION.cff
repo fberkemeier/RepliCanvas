@@ -1,13 +1,13 @@
 cff-version: 1.2.0
 message: >-
-  If you use RepliSketch in your work, please cite it using the metadata below.
-title: RepliSketch
+  If you use RepliCanvas in your work, please cite it using the metadata below.
+title: RepliCanvas
 type: software
 version: "1.0.0"
 authors:
   - family-names: Berkemeier
     given-names: Francisco
     email: fp409@cam.ac.uk
-repository-code: https://github.com/fberkemeier/RepliSketch
-url: https://github.com/fberkemeier/RepliSketch
+repository-code: https://github.com/fberkemeier/RepliCanvas
+url: https://github.com/fberkemeier/RepliCanvas
 license: MIT
