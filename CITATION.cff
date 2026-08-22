@@ -3,7 +3,7 @@ message: >-
   If you use RepliCanvas in your work, please cite it using the metadata below.
 title: RepliCanvas
 type: software
-version: "1.0.0"
+version: "1.3.5"
 authors:
   - family-names: Berkemeier
     given-names: Francisco
@@ -11,3 +11,4 @@ authors:
 repository-code: https://github.com/fberkemeier/RepliCanvas
 url: https://github.com/fberkemeier/RepliCanvas
 license: MIT
+date-released: 2026-08-21

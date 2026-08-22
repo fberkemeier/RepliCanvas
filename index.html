@@ -99,7 +99,7 @@
               <button id="exportPngButton" type="button" role="menuitem"><strong>PNG</strong><span>High-resolution raster, 2x</span></button>
               <button id="exportSvgButton" type="button" role="menuitem"><strong>SVG</strong><span>Editable vector artwork</span></button>
               <button id="exportPdfButton" type="button" role="menuitem"><strong>PDF</strong><span>Print-ready vector artwork</span></button>
-              <button id="exportMp4Button" type="button" role="menuitem"><strong>MP4</strong><span>60 fps animation</span></button>
+              <button id="exportMp4Button" type="button" role="menuitem"><strong>MP4</strong><span id="exportMp4Description">60 fps, 1280 px</span></button>
             </div>
           </div>
           <div class="rs-project-menu" id="projectMenuControl">
@@ -130,6 +130,13 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.5 15.5A7 7 0 1 1 15.5 15.5c-.8.65-1.2 1.45-1.25 2.5h-4.5c-.05-1.05-.45-1.85-1.25-2.5Z" /></svg>
                 <span>Raise an issue</span>
               </a>
+              <button id="settingsMenuButton" type="button" role="menuitem">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.08V21h-4v-.08A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.08-.4H3v-4h-.08A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.08V3h4v.08A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.08.4H21v4h.08A1.7 1.7 0 0 0 19.4 15Z" />
+                </svg>
+                <span>Settings</span>
+              </button>
               <button id="aboutMenuButton" type="button" role="menuitem">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="12" cy="12" r="9" />
@@ -198,13 +205,23 @@
               <h2>Geometry</h2>
             </div>
 
-            <div class="rs-select-control">
-              <label for="modelControl">Model</label>
-              <select id="modelControl">
-                <option value="standard" selected>Standard</option>
-                <option value="elegant">Straight</option>
-                <option value="minimal">Minimal</option>
-              </select>
+            <div class="rs-select-pair" aria-label="Molecule model and geometry">
+              <div class="rs-select-control">
+                <label for="modelControl">Model</label>
+                <select id="modelControl">
+                  <option value="standard" selected>Standard</option>
+                  <option value="elegant">Straight</option>
+                  <option value="minimal">Minimal</option>
+                </select>
+              </div>
+              <div class="rs-select-control">
+                <label for="geometryControl">Geometry</label>
+                <select id="geometryControl">
+                  <option value="linear" selected>Linear</option>
+                  <option value="circular">Circular</option>
+                  <option value="freeform">Free form</option>
+                </select>
+              </div>
             </div>
 
             <div class="rs-range-control">
@@ -336,6 +353,16 @@
                     <input id="gridToggle" type="checkbox" checked />
                     <span class="rs-toggle-track" aria-hidden="true"></span>
                   </label>
+                  <label class="rs-toggle" for="centricGridToggle">
+                    <span>Centrical grid</span>
+                    <input id="centricGridToggle" type="checkbox" />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="rs-toggle" for="scaleBarToggle">
+                    <span>Scale bar</span>
+                    <input id="scaleBarToggle" type="checkbox" checked />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
                   <label class="rs-toggle" for="alwaysShowControlsToggle">
                     <span>Always show controls</span>
                     <input id="alwaysShowControlsToggle" type="checkbox" checked />
@@ -356,22 +383,23 @@
                     <input id="contourToggle" type="checkbox" />
                     <span class="rs-toggle-track" aria-hidden="true"></span>
                   </label>
+                  <label class="rs-toggle" for="fitGenomeToggle" title="Keep the complete genome within the drawing area. Turn off to retain a fixed genomic scale and extend the molecule.">
+                    <span>Fit genome to canvas</span>
+                    <input id="fitGenomeToggle" type="checkbox" checked />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="rs-toggle" for="rightHandedToggle" title="Turn off for a left-handed helix.">
+                    <span>Right-handed helix</span>
+                    <input id="rightHandedToggle" type="checkbox" checked />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="rs-toggle" for="depthAwareColorSplitToggle" title="Shift the boundary between two base-pair colours towards the strand that is farther from the viewer near each crossover.">
+                    <span>Depth-aware colour split</span>
+                    <input id="depthAwareColorSplitToggle" type="checkbox" />
+                    <span class="rs-toggle-track" aria-hidden="true"></span>
+                  </label>
                 </div>
                 <div class="rs-options-group rs-options-dropdown-group">
-                  <div class="rs-select-control rs-compact-select rs-options-select">
-                    <label for="lengthModeControl">Genome resizing</label>
-                    <select id="lengthModeControl">
-                      <option value="scale" selected>Rescale to fit</option>
-                      <option value="extend">Extend to the right</option>
-                    </select>
-                  </div>
-                  <div class="rs-select-control rs-compact-select rs-options-select">
-                    <label for="dnaHandednessControl">DNA chirality</label>
-                    <select id="dnaHandednessControl">
-                      <option value="right" selected>Right-handed helix</option>
-                      <option value="left">Left-handed helix</option>
-                    </select>
-                  </div>
                   <div class="rs-select-control rs-compact-select rs-options-select">
                     <label for="basePairTransitionControl">Base-pair animation</label>
                     <select id="basePairTransitionControl">
@@ -397,6 +425,22 @@
                     </label>
                     <input id="strandPhaseShiftControl" type="range" min="-5" max="5" step="0.25" value="0" />
                     <div class="rs-transition-scale" aria-hidden="true"><span>Left</span><span>Aligned</span><span>Right</span></div>
+                  </div>
+                  <div class="rs-range-control rs-options-range">
+                    <label for="basePairTranslationControl">
+                      <span>Base-pair translation</span>
+                      <output id="basePairTranslationOutput" for="basePairTranslationControl">Anchored</output>
+                    </label>
+                    <input id="basePairTranslationControl" type="range" min="-5" max="5" step="0.05" value="0" />
+                    <div class="rs-transition-scale" aria-hidden="true"><span>Left</span><span>Crossovers</span><span>Right</span></div>
+                  </div>
+                  <div class="rs-range-control rs-options-range">
+                    <label for="basePairAngleControl">
+                      <span>Base-pair angle</span>
+                      <output id="basePairAngleOutput" for="basePairAngleControl">Vertical</output>
+                    </label>
+                    <input id="basePairAngleControl" type="range" min="-60" max="60" step="1" value="0" />
+                    <div class="rs-transition-scale" aria-hidden="true"><span>&minus;60&deg;</span><span>Vertical</span><span>+60&deg;</span></div>
                   </div>
                   <div class="rs-range-control rs-options-range">
                     <label for="transitionTightnessControl">
@@ -474,6 +518,45 @@
             <svg id="dnaCanvas" viewBox="0 0 1200 640" role="img" aria-labelledby="dnaCanvasTitle dnaCanvasDescription" tabindex="0"></svg>
             <div class="rs-canvas-legend" id="canvasLegend" aria-label="Strand colour legend"></div>
             <div class="rs-chromosome-ruler" id="chromosomeRuler" aria-label="Genomic position"></div>
+            <div class="rs-freeform-tools" id="freeformTools" aria-label="Free-form DNA tools" hidden>
+              <div class="rs-freeform-tool-group rs-freeform-primary-tools" role="toolbar" aria-label="Free-form editing mode" aria-orientation="vertical">
+                <button id="freeformDrawButton" type="button" title="Paint a new DNA piece" aria-label="Paint a new DNA piece" aria-pressed="true">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 20h4L19 9l-4-4L4 16v4Z" />
+                    <path d="m13.5 6.5 4 4M4 16l4 4" />
+                  </svg>
+                </button>
+                <button id="freeformEditButton" type="button" title="DNA tools: add origins and edit replication" aria-label="Use DNA replication tools" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path d="M12 8v8M8 12h8" />
+                  </svg>
+                </button>
+                <button id="freeformSelectButton" type="button" title="Shape and link DNA pieces" aria-label="Shape and link DNA pieces" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 17c4-9 10-10 16-5" />
+                    <path d="M7 16 11 7M11 7l6 3" opacity=".7" />
+                    <circle cx="4" cy="17" r="1.7" /><circle cx="11" cy="7" r="1.7" /><circle cx="20" cy="12" r="1.7" />
+                  </svg>
+                </button>
+                <button id="freeformEraseButton" type="button" title="Erase or split DNA pieces" aria-label="Erase or split DNA pieces" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m4 14.5 7.8-9.8a2 2 0 0 1 2.8-.3l4.8 3.8a2 2 0 0 1 .3 2.8L13 19.5H8.2Z" />
+                    <path d="m8.5 9 7.4 5.8M12.8 19.5H21" />
+                  </svg>
+                </button>
+                <button class="rs-freeform-delete-tool" id="freeformDeletePathButton" type="button" title="Delete the selected DNA piece" aria-label="Delete the selected DNA piece" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 7h14M9 7V4h6v3M8 7l1 13h6l1-13M10 10v7M14 10v7" />
+                  </svg>
+                </button>
+              </div>
+              <label class="rs-freeform-eraser-setting rs-aspect-slider" id="freeformEraserSize" for="freeformEraserSizeControl" title="Eraser size" hidden>
+                <svg class="rs-freeform-size-symbol" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 15 7-9 7 5-7 9H8Z" /><path d="M13 20h6" /></svg>
+                <input id="freeformEraserSizeControl" type="range" min="6" max="64" step="1" value="30" aria-label="Eraser size" aria-valuetext="60 px diameter" />
+                <output id="freeformEraserSizeOutput" for="freeformEraserSizeControl">60 px</output>
+              </label>
+            </div>
             <div class="rs-zoom-controls" aria-label="Preview zoom">
               <button id="zoomOutButton" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
               <output id="zoomOutput" aria-live="polite">100%</output>
@@ -502,7 +585,6 @@
               <span id="selectionMessage">No selection</span>
               <span class="rs-status-separator" aria-hidden="true">|</span>
               <span id="statusMessage">Ready</span>
-              <a class="rs-video-save-link" id="videoSaveLink" type="video/mp4" hidden>Download MP4</a>
             </div>
             <nav class="rs-project-meta rs-status-project-meta" aria-label="RepliCanvas project links">
               <span class="rs-project-version">v1.0.0</span>
@@ -579,24 +661,70 @@
       </section>
     </div>
 
-
-    <div class="rs-video-ready-backdrop" id="videoReadyModal" hidden>
+    <div class="rs-settings-backdrop" id="settingsModal" hidden>
       <section
-        class="rs-video-ready-dialog"
+        class="rs-settings-dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="videoReadyTitle"
-        aria-describedby="videoReadyMessage"
+        aria-labelledby="settingsTitle"
+        aria-describedby="settingsDescription"
       >
-        <button class="rs-video-ready-close" id="videoReadyCloseButton" type="button" aria-label="Close animation download dialog">
+        <button class="rs-settings-close" id="settingsCloseButton" type="button" aria-label="Close RepliCanvas settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
-        <svg class="rs-video-ready-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 3v11M7.5 10.5 12 15l4.5-4.5M5 20h14" />
-        </svg>
-        <h2 id="videoReadyTitle">Animation ready</h2>
-        <p id="videoReadyMessage">Select Download MP4 to complete a browser-recognised download.</p>
-        <a class="rs-video-ready-download" id="videoReadyDownloadButton" type="video/mp4">Download MP4</a>
+        <h2 id="settingsTitle">Settings</h2>
+        <p id="settingsDescription">Tune playback, preview performance and animation export.</p>
+        <div class="rs-settings-grid">
+          <label class="rs-settings-field" for="settingsFrameRateControl">
+            <span>Animation frame rate</span>
+            <select id="settingsFrameRateControl">
+              <option value="24">24 fps</option>
+              <option value="30">30 fps</option>
+              <option value="60" selected>60 fps</option>
+            </select>
+          </label>
+          <label class="rs-settings-field" for="settingsResolutionControl">
+            <span>Animation resolution</span>
+            <select id="settingsResolutionControl">
+              <option value="1280" selected>HD, 1280 px</option>
+              <option value="1920">Full HD, 1920 px</option>
+              <option value="2560">QHD, 2560 px</option>
+              <option value="3840">4K, 3840 px</option>
+            </select>
+          </label>
+          <label class="rs-settings-field" for="settingsVideoQualityControl">
+            <span>Video quality</span>
+            <select id="settingsVideoQualityControl">
+              <option value="balanced">Balanced</option>
+              <option value="high" selected>High</option>
+              <option value="maximum">Maximum</option>
+            </select>
+          </label>
+          <label class="rs-settings-field" for="settingsPreviewDetailControl">
+            <span>Preview detail</span>
+            <select id="settingsPreviewDetailControl">
+              <option value="auto" selected>Automatic</option>
+              <option value="full">Always full</option>
+              <option value="fast">Faster interaction</option>
+            </select>
+          </label>
+        </div>
+        <div class="rs-settings-switches">
+          <label class="rs-toggle" for="settingsPauseHiddenToggle">
+            <span>Pause playback in hidden tabs</span>
+            <input id="settingsPauseHiddenToggle" type="checkbox" checked />
+            <span class="rs-toggle-track" aria-hidden="true"></span>
+          </label>
+          <label class="rs-toggle" for="settingsRememberProjectToggle">
+            <span>Remember the current project</span>
+            <input id="settingsRememberProjectToggle" type="checkbox" checked />
+            <span class="rs-toggle-track" aria-hidden="true"></span>
+          </label>
+        </div>
+        <div class="rs-settings-actions">
+          <button class="rs-button" id="settingsResetButton" type="button">Restore defaults</button>
+          <button class="rs-button rs-button-primary" id="settingsDoneButton" type="button">Done</button>
+        </div>
       </section>
     </div>
   </body>
