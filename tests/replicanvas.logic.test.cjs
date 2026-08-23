@@ -69,6 +69,7 @@ const testApi = `
     canvasInkColor,
     circularGeometry,
     freeformGeometry,
+    clearFreeformCanvasState,
     defaultFreeformWorkspace,
     freeformSnapToStartEnabled,
     freeformDraftCloseCandidate,
@@ -290,6 +291,7 @@ const testApi = `
     renderableReplicationRegions,
     reseedBasePairSequence,
     reset,
+    resetMoleculeState,
     resizeGenomeLength,
     reseedNextOriginId,
     remuxWebmToMp4,
@@ -314,7 +316,9 @@ const testApi = `
     setSPhaseTime,
     selectedForkDescriptor,
     setState(value) { state = value; syncViewGeometry(state); },
+    getState() { return state; },
     setThemeMode(value) { themeMode = value; },
+    getThemeMode() { return themeMode; },
     setVideoExportBusy,
     setVideoExportProgress,
     setViewState(value) { viewState = value; },
@@ -3325,6 +3329,10 @@ test("browser metadata and configuration file actions are exposed accessibly", (
   assert.ok(fs.existsSync(path.join(__dirname, "..", "assets", "img", "logo_small.png")));
   assert.match(html, /id="saveConfigButton"[^>]*aria-label="Save configuration"/);
   assert.match(html, /id="loadConfigButton"[^>]*aria-label="Load configuration"/);
+  const resetButton = html.match(/<button[^>]*id="resetButton"[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(resetButton, /aria-label="Reset molecule"/);
+  assert.match(resetButton, /<svg[^>]*aria-hidden="true"[\s\S]*M3 12a9 9 0 1 0/);
+  assert.doesNotMatch(resetButton, /&#8635;/);
   assert.match(
     html,
     /id="configFileInput"[^>]*type="file"[^>]*accept="\.replicanvas\.json,\.json,application\/json"[^>]*hidden/
@@ -7128,12 +7136,140 @@ test("a fork dragged from a new free-form origin keeps the opposite edge fixed a
   assert.ok(Math.abs(geometry.rightPosition - target) < 1e-10);
 });
 
-test("reset is scoped to the active geometry and never switches workspaces", () => {
-  const resetSource = source.slice(source.indexOf("function reset()"), source.indexOf("function forkFlags()"));
-  assert.match(resetSource, /if \(freeformGeometry\(state\)\)[\s\S]*state\.geometry = "freeform"/);
-  assert.match(resetSource, /const currentGeometry = geometryMode\(state\);/);
-  assert.match(resetSource, /state = makeDefaultState\(\);[\s\S]*state\.geometry = currentGeometry;/);
-  assert.doesNotMatch(resetSource, /state\.geometry = "linear"/);
+test("reset restores molecule defaults while preserving geometry, style, and application settings", () => {
+  const changed = api.makeDefaultState();
+  Object.assign(changed, {
+    geometry: "freeform",
+    length: 137,
+    progress: 64,
+    pairResolution: 9,
+    basePairWidth: 11,
+    weight: 13,
+    doubleStrandHeight: 82,
+    daughterSpacing: 244,
+    speed: 3.25,
+    discreteAnimation: true,
+  });
+  changed.colors = { ...changed.colors, templateA: "#ff00aa", newDna: "#00ffaa" };
+  changed.layers = { pairs: false, newDna: false, labels: false };
+  changed.advanced = {
+    ...changed.advanced,
+    strandModel: "minimal",
+    grid: false,
+    scaleBar: false,
+    aspectX: 1.8,
+    aspectY: 0.55,
+    backgroundColor: "#112233",
+  };
+  changed.freeform = {
+    paths: [{ id: "painted-reset", closed: true, points: [
+      { x: 200, y: 200 },
+      { x: 320, y: 200 },
+      { x: 260, y: 300 },
+    ] }],
+    selectedPathId: "painted-reset",
+    snapToStart: true,
+    workspace: api.defaultFreeformWorkspace(),
+  };
+  api.normaliseStateSchema(changed);
+  api.setState(changed);
+  api.setViewState({ zoom: 2.4, panX: 91, panY: -47 });
+  api.setFreeformEditor({
+    tool: "erase",
+    selectedPathId: "painted-reset",
+    eraserRadius: 72,
+    draftPoints: [{ x: 1, y: 2 }],
+    eraserPoints: [{ x: 3, y: 4 }],
+  });
+
+  api.setAppSettings({
+    frameRate: 30,
+    videoWidth: 1920,
+    videoQuality: "maximum",
+    previewDetail: "fast",
+    pauseWhenHidden: false,
+    rememberProject: false,
+  });
+  api.setThemeMode("dark");
+  const preservedSettings = api.getAppSettings();
+  const expected = api.makeDefaultState();
+  expected.advanced.strandModel = "minimal";
+  api.switchGeometryWorkspace("freeform", expected);
+  const expectedView = api.fittedViewState(expected);
+
+  api.resetMoleculeState();
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getState())),
+    JSON.parse(JSON.stringify(expected))
+  );
+  assert.deepEqual(api.getViewState(), expectedView);
+  assert.equal(api.getFreeformEditor().tool, "draw");
+  assert.equal(api.getFreeformEditor().eraserRadius, 30);
+  assert.equal(api.getFreeformEditor().draftPoints.length, 0);
+  assert.equal(api.getFreeformEditor().eraserPoints.length, 0);
+  assert.deepEqual(api.getAppSettings(), preservedSettings);
+  assert.equal(api.getThemeMode(), "dark");
+});
+
+test("free-form trash clears every painted strand and its replication state", () => {
+  const state = freeformState(
+    [
+      {
+        id: "trash-one",
+        closed: false,
+        points: [{ x: 180, y: 250 }, { x: 520, y: 250 }],
+      },
+      {
+        id: "trash-two",
+        closed: false,
+        points: [{ x: 680, y: 410 }, { x: 1040, y: 410 }],
+      },
+    ],
+    [
+      {
+        id: "trash-origin-one",
+        position: 0.25,
+        startPosition: 0.25,
+        localPosition: 0.5,
+        moleculeId: "trash-one",
+        leftOffset: 0.04,
+        rightOffset: 0.07,
+      },
+      {
+        id: "trash-origin-two",
+        position: 0.75,
+        startPosition: 0.75,
+        localPosition: 0.5,
+        moleculeId: "trash-two",
+        leftOffset: 0.02,
+        rightOffset: 0.03,
+      },
+    ]
+  );
+  state.cuts = [{ start: 0.1, end: 0.2, componentId: "trash-one" }];
+  state.progress = 58;
+  state.forkTravel = 0.22;
+  state.advanced.strandModel = "elegant";
+  state.colors.templateA = "#123456";
+  const structuredWorkspace = JSON.parse(JSON.stringify(state.structuredWorkspace));
+
+  assert.equal(api.clearFreeformCanvasState(state), true);
+  assert.equal(state.geometry, "freeform");
+  assert.equal(state.advanced.strandModel, "elegant");
+  assert.equal(state.colors.templateA, "#123456");
+  assert.equal(state.freeform.paths.length, 0);
+  assert.equal(state.freeform.selectedPathId, null);
+  assert.equal(state.origins.length, 0);
+  assert.equal(state.cuts.length, 0);
+  assert.equal(state.progress, 0);
+  assert.equal(state.forkTravel, 0);
+  assert.equal(state.selectedOriginId, null);
+  assert.equal(state.selectedFork, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(state.structuredWorkspace)),
+    structuredWorkspace
+  );
 });
 
 test("free-form erasing splits DNA while retaining controls on every surviving piece", () => {
@@ -7574,6 +7710,14 @@ test("the free-form canvas exposes an accessible bottom-left drawing palette and
   );
   assert.match(source, /elements\.freeformDrawButton, "draw"/);
   assert.match(source, /eraseFreeformPaths\(stroke, freeformEraserRadius\(\), state\)/);
+  assert.match(
+    html,
+    /id="freeformDeletePathButton"[^>]*title="Delete all painted DNA"[^>]*aria-label="Delete all painted DNA"/
+  );
+  assert.match(
+    source,
+    /freeformDeletePathButton\?\.addEventListener\("click", deleteAllFreeformPaths\)/
+  );
 
   const state = freeformState(
     [
@@ -7873,6 +8017,70 @@ test("paint strokes are interpolated, relatively simplified, and emitted as smoo
   assert.match(path, /^M/);
   assert.match(path, / C/);
   assert.doesNotMatch(path, /NaN|Infinity/);
+});
+
+test("paint sampling is independent of pointer-event rate and preserves circular steering", () => {
+  const center = { x: 620, y: 390 };
+  const radius = 100;
+  const collectCircle = (eventCount) => {
+    const points = [];
+    for (let index = 0; index <= eventCount; index += 1) {
+      const angle = (Math.PI * 2 * index) / eventCount;
+      api.appendFreeformStrokePoint(
+        points,
+        {
+          x: center.x + radius * Math.cos(angle),
+          y: center.y + radius * Math.sin(angle),
+        },
+        4
+      );
+    }
+    return points;
+  };
+  const sparse = collectCircle(36);
+  const dense = collectCircle(720);
+
+  assert.ok(sparse.length > 150 && dense.length > 150);
+  assert.ok(Math.abs(sparse.length - dense.length) <= 2);
+  [sparse, dense].forEach((points) => {
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    assert.ok(Math.max(...xs) - Math.min(...xs) > radius * 1.98);
+    assert.ok(Math.max(...ys) - Math.min(...ys) > radius * 1.98);
+    assert.ok(Math.hypot(points.at(-1).x - (center.x + radius), points.at(-1).y - center.y) < 1e-8);
+  });
+
+  const state = api.makeDefaultState();
+  state.geometry = "freeform";
+  state.freeform = { paths: [], selectedPathId: null };
+  api.normaliseStateSchema(state);
+  api.setState(state);
+  api.setViewState({ zoom: 1, panX: 0, panY: 0 });
+  const sparsePrepared = api.prepareFreeformStroke(sparse, state, { zoom: 1 });
+  const densePrepared = api.prepareFreeformStroke(dense, state, { zoom: 1 });
+  const distanceToPolyline = (point, polyline) => {
+    let nearest = Infinity;
+    for (let index = 1; index < polyline.length; index += 1) {
+      const start = polyline[index - 1];
+      const end = polyline[index];
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const denominator = dx * dx + dy * dy;
+      const amount = denominator
+        ? Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / denominator))
+        : 0;
+      nearest = Math.min(
+        nearest,
+        Math.hypot(point.x - (start.x + dx * amount), point.y - (start.y + dy * amount))
+      );
+    }
+    return nearest;
+  };
+  const deviation = Math.max(
+    ...sparsePrepared.map((point) => distanceToPolyline(point, densePrepared)),
+    ...densePrepared.map((point) => distanceToPolyline(point, sparsePrepared))
+  );
+  assert.ok(deviation < 2, `event-rate variants should remain visually equivalent (deviation ${deviation})`);
 });
 
 test("free-form metrics and SVG paths share one C1 centripetal centerline", () => {

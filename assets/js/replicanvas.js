@@ -69,7 +69,7 @@
   const CIRCULAR_MIN_RENDERED_RADIUS_FRACTION = 0.4;
   const CIRCULAR_RADIUS_SOFT_CLAMP_FRACTION = 0.14;
   const FREEFORM_TOOLS = new Set(["edit", "select", "draw", "erase"]);
-  const FREEFORM_DRAW_POINT_SPACING = 4;
+  const FREEFORM_DRAW_POINT_SPACING = 3.5;
   const FREEFORM_DRAW_RELATIVE_TOLERANCE = 0.0035;
   const FREEFORM_DRAW_MIN_TOLERANCE_PX = 1.1;
   const FREEFORM_DRAW_MAX_TOLERANCE_PX = 5;
@@ -257,6 +257,7 @@
   const freeformMetricsCache = new WeakMap();
   const freeformHelixCache = new WeakMap();
   const freeformFrameCache = new WeakMap();
+  const freeformStrokeSamplers = new WeakMap();
   let artworkComputationCache = null;
 
   function withArtworkComputationCache(model, sourceState, callback) {
@@ -1983,49 +1984,93 @@
   function appendFreeformStrokePoint(points, point, minimumSpacing = FREEFORM_DRAW_POINT_SPACING) {
     const candidate = freeformPoint(point);
     if (!candidate) return false;
+    const spacing = Math.max(0.5, Number(minimumSpacing) || FREEFORM_DRAW_POINT_SPACING);
+    let sampler = freeformStrokeSamplers.get(points);
+
+    if (sampler?.tail) {
+      if (points.at(-1) === sampler.tail) {
+        points.pop();
+      } else {
+        sampler = null;
+      }
+    }
+
     const previous = points.at(-1);
     if (!previous) {
       points.push(candidate);
+      freeformStrokeSamplers.set(points, {
+        lastInput: candidate,
+        remainder: 0,
+        spacing,
+        tail: null,
+      });
       return true;
     }
-    const spacing = Math.max(0.5, Number(minimumSpacing) || FREEFORM_DRAW_POINT_SPACING);
-    const dx = candidate.x - previous.x;
-    const dy = candidate.y - previous.y;
-    const distance = Math.hypot(dx, dy);
-    if (distance <= EPSILON) return false;
 
-    // Pointer events arrive at a device- and load-dependent frequency. Fill
-    // the interval between events on a uniform arc-length lattice so the final
-    // spline is determined by the drawn gesture rather than mouse sampling.
-    const steps = Math.floor(distance / spacing);
-    if (steps === 0) {
-      const penultimate = points.length > 1 ? points.at(-2) : null;
-      if (
-        penultimate &&
-        Math.hypot(candidate.x - penultimate.x, candidate.y - penultimate.y) >= spacing * 0.72
-      ) {
-        points[points.length - 1] = candidate;
-        return true;
+    if (!sampler) {
+      sampler = {
+        lastInput: previous,
+        remainder: 0,
+        spacing,
+        tail: null,
+      };
+      freeformStrokeSamplers.set(points, sampler);
+    } else if (Math.abs(sampler.spacing - spacing) > EPSILON) {
+      const phase = sampler.spacing > EPSILON ? sampler.remainder / sampler.spacing : 0;
+      sampler.remainder = clamp(phase * spacing, 0, Math.max(0, spacing - EPSILON));
+      sampler.spacing = spacing;
+    }
+
+    const segmentStart = sampler.lastInput;
+    const dx = candidate.x - segmentStart.x;
+    const dy = candidate.y - segmentStart.y;
+    const distance = Math.hypot(dx, dy);
+
+    // Pointer events arrive at a device- and load-dependent frequency. Carry
+    // unused arc length across events and commit only uniform spatial samples;
+    // the final item is a transient exact endpoint used by the live preview.
+    if (distance > EPSILON) {
+      let travelled = 0;
+      let distanceToNext = spacing - sampler.remainder;
+      while (distance - travelled >= distanceToNext - EPSILON) {
+        travelled += distanceToNext;
+        const amount = clamp(travelled / distance, 0, 1);
+        const sample = {
+          x: segmentStart.x + dx * amount,
+          y: segmentStart.y + dy * amount,
+        };
+        const committed = points.at(-1);
+        if (
+          !committed ||
+          Math.hypot(sample.x - committed.x, sample.y - committed.y) > EPSILON
+        ) {
+          points.push(sample);
+        }
+        sampler.remainder = 0;
+        distanceToNext = spacing;
       }
-      return false;
+      sampler.remainder = clamp(
+        sampler.remainder + distance - travelled,
+        0,
+        Math.max(0, spacing - EPSILON)
+      );
+      sampler.lastInput = candidate;
     }
-    for (let index = 1; index <= steps; index += 1) {
-      const amount = Math.min(1, (index * spacing) / distance);
-      points.push({
-        x: previous.x + dx * amount,
-        y: previous.y + dy * amount,
-      });
-    }
-    const last = points.at(-1);
-    if (Math.hypot(candidate.x - last.x, candidate.y - last.y) >= spacing * 0.28) {
+
+    const committed = points.at(-1);
+    if (
+      !committed ||
+      Math.hypot(candidate.x - committed.x, candidate.y - committed.y) > EPSILON
+    ) {
+      sampler.tail = candidate;
       points.push(candidate);
     } else {
-      points[points.length - 1] = candidate;
+      sampler.tail = null;
     }
     if (points.length > FREEFORM_MAX_POINTS) {
       points.splice(1, points.length - FREEFORM_MAX_POINTS);
     }
-    return true;
+    return distance > EPSILON;
   }
 
   function simplifyFreeformPoints(
@@ -3312,8 +3357,9 @@
     if (elements.freeformEraserSizeOutput) {
       elements.freeformEraserSizeOutput.textContent = `${eraserDiameter} px`;
     }
-    const selected = selectedFreeformPath();
-    if (elements.freeformDeletePathButton) elements.freeformDeletePathButton.disabled = !selected;
+    if (elements.freeformDeletePathButton) {
+      elements.freeformDeletePathButton.disabled = !(state.freeform?.paths?.length > 0);
+    }
   }
 
   function setFreeformTool(tool, { announce = true } = {}) {
@@ -4023,6 +4069,37 @@
     syncControls();
     render();
     setStatus("DNA piece deleted");
+    return true;
+  }
+
+  function clearFreeformCanvasState(sourceState = state) {
+    if (!freeformGeometry(sourceState)) return false;
+    sourceState.freeform = {
+      paths: [],
+      selectedPathId: null,
+      snapToStart: freeformSnapToStartEnabled(sourceState),
+      workspace: defaultFreeformWorkspace(),
+    };
+    applyReplicationWorkspace(sourceState, sourceState.freeform.workspace, {
+      kind: "freeform",
+    });
+    sourceState.geometry = "freeform";
+    sourceState.advanced.lengthMode = "scale";
+    sourceState.advanced.scaleBar = false;
+    normaliseStateSchema(sourceState);
+    return true;
+  }
+
+  function deleteAllFreeformPaths() {
+    if (!freeformGeometry(state) || !(state.freeform?.paths?.length > 0)) return false;
+    pushSnapshot();
+    stopAnimation();
+    clearFreeformCanvasState(state);
+    syncFreeformEditorFromState(state);
+    syncViewGeometry(state);
+    syncControls();
+    render();
+    setStatus("All painted DNA deleted");
     return true;
   }
 
@@ -6096,60 +6173,31 @@
     setStatus("Next state restored");
   }
 
+  function resetMoleculeState() {
+    const preservedGeometry = geometryMode(state);
+    const preservedStyle = strandModel(state);
+    state = makeDefaultState();
+    state.advanced.strandModel = preservedStyle;
+    if (preservedGeometry !== geometryMode(state)) {
+      switchGeometryWorkspace(preservedGeometry, state);
+    }
+    dragState = null;
+    hoverState = null;
+    freeformEditor.eraserRadius = FREEFORM_ERASER_RADIUS;
+    syncFreeformEditorFromState(state, { resetTool: true });
+    syncViewGeometry(state);
+    viewState = fittedViewState(state);
+    return state;
+  }
+
   function reset() {
     pushSnapshot();
     stopAnimation();
     pendingControlSnapshot = null;
-
-    if (freeformGeometry(state)) {
-      // Free form is an independent workspace. Resetting it clears only the
-      // painted DNA and replication state, without destroying the linear /
-      // circular model kept in the structured workspace.
-      state.freeform = {
-        paths: [],
-        selectedPathId: null,
-        snapToStart: freeformSnapToStartEnabled(state),
-        workspace: defaultFreeformWorkspace(),
-      };
-      applyReplicationWorkspace(state, state.freeform.workspace, {
-        kind: "freeform",
-      });
-      state.geometry = "freeform";
-      state.advanced.lengthMode = "scale";
-      state.advanced.scaleBar = false;
-      normaliseStateSchema(state);
-      syncFreeformEditorFromState(state, { resetTool: true });
-      viewState = { zoom: 1, panX: 0, panY: 0 };
-      syncControls();
-      render();
-      setStatus("Free-form canvas cleared");
-      return;
-    }
-
-    const currentGeometry = geometryMode(state);
-    const preservedFreeform = normaliseFreeformState(
-      {
-        ...(state.freeform || {}),
-        paths: (state.freeform?.paths || []).map((path) => ({
-          id: path.id,
-          closed: Boolean(path.closed),
-          genomicLength: freeformPathGenomicLength(path, state),
-          points: path.points.map((point) => ({ ...point })),
-        })),
-        workspace: state.freeform?.workspace,
-      },
-      state
-    );
-    state = makeDefaultState();
-    state.geometry = currentGeometry;
-    state.freeform = preservedFreeform;
-    state.structuredWorkspace = defaultStructuredWorkspace();
-    normaliseStateSchema(state);
-    syncFreeformEditorFromState(state, { resetTool: true });
-    viewState = { zoom: 1, panX: 0, panY: 0 };
+    resetMoleculeState();
     syncControls();
     render();
-    setStatus(`${currentGeometry === "circular" ? "Circular" : "Linear"} molecule reset`);
+    setStatus("Molecule and canvas reset");
   }
 
   function forkFlags() {
@@ -15588,7 +15636,7 @@
       scheduleRender();
       setStatus(`Eraser size set to ${Math.round(freeformEditor.eraserRadius * 2)} px`);
     });
-    elements.freeformDeletePathButton?.addEventListener("click", deleteSelectedFreeformPath);
+    elements.freeformDeletePathButton?.addEventListener("click", deleteAllFreeformPaths);
 
     bindContinuousControl(elements.lengthControl, (value) => {
       const nextLength = boundedLengthValue(value, state);
