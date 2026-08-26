@@ -34,15 +34,11 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
 - **Save reusable projects.** Download a complete configuration and load it later to continue editing every relevant parameter and replication event.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-modes-demo-dark.gif" />
-    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-modes-demo.gif" />
-    <img
-      src="assets/img/replicanvas-modes-demo.gif"
-      alt="Linear, circular, and free-form DNA replication modes in RepliCanvas"
-      width="800"
-    />
-  </picture>
+  <img
+    src="assets/img/replicanvas-modes-demo.gif"
+    alt="Linear, circular, and free-form DNA replication modes in RepliCanvas"
+    width="800"
+  />
 </p>
 
 <p align="center"><em>Three ways to shape a replicating molecule: linear, circular, or entirely free-form.</em></p>
