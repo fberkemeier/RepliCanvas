@@ -102,6 +102,7 @@
               <button id="exportPngButton" type="button" role="menuitem"><strong>PNG</strong><span>High-resolution raster, 2x</span></button>
               <button id="exportSvgButton" type="button" role="menuitem"><strong>SVG</strong><span>Editable vector artwork</span></button>
               <button id="exportPdfButton" type="button" role="menuitem"><strong>PDF</strong><span>Print-ready vector artwork</span></button>
+              <button id="exportGifButton" type="button" role="menuitem"><strong>GIF</strong><span id="exportGifDescription">15 fps, 960 px</span></button>
               <button id="exportMp4Button" type="button" role="menuitem"><strong>MP4</strong><span id="exportMp4Description">60 fps, 1280 px</span></button>
             </div>
           </div>
@@ -676,53 +677,102 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
         <h2 id="settingsTitle">Settings</h2>
-        <p id="settingsDescription">Tune playback, preview performance and animation export.</p>
-        <div class="rs-settings-grid">
-          <label class="rs-settings-field" for="settingsFrameRateControl">
-            <span>Animation frame rate</span>
-            <select id="settingsFrameRateControl">
-              <option value="24">24 fps</option>
-              <option value="30">30 fps</option>
-              <option value="60" selected>60 fps</option>
-            </select>
-          </label>
-          <label class="rs-settings-field" for="settingsResolutionControl">
-            <span>Animation resolution</span>
-            <select id="settingsResolutionControl">
-              <option value="1280" selected>HD, 1280 px</option>
-              <option value="1920">Full HD, 1920 px</option>
-              <option value="2560">QHD, 2560 px</option>
-              <option value="3840">4K, 3840 px</option>
-            </select>
-          </label>
-          <label class="rs-settings-field" for="settingsVideoQualityControl">
-            <span>Video quality</span>
-            <select id="settingsVideoQualityControl">
-              <option value="balanced">Balanced</option>
-              <option value="high" selected>High</option>
-              <option value="maximum">Maximum</option>
-            </select>
-          </label>
-          <label class="rs-settings-field" for="settingsPreviewDetailControl">
-            <span>Preview detail</span>
-            <select id="settingsPreviewDetailControl">
-              <option value="auto" selected>Automatic</option>
-              <option value="full">Always full</option>
-              <option value="fast">Faster interaction</option>
-            </select>
-          </label>
-        </div>
-        <div class="rs-settings-switches">
-          <label class="rs-toggle" for="settingsPauseHiddenToggle">
-            <span>Pause playback in hidden tabs</span>
-            <input id="settingsPauseHiddenToggle" type="checkbox" checked />
-            <span class="rs-toggle-track" aria-hidden="true"></span>
-          </label>
-          <label class="rs-toggle" for="settingsRememberProjectToggle">
-            <span>Remember the current project</span>
-            <input id="settingsRememberProjectToggle" type="checkbox" checked />
-            <span class="rs-toggle-track" aria-hidden="true"></span>
-          </label>
+        <p id="settingsDescription">Choose export quality and how RepliCanvas behaves while you work.</p>
+        <div class="rs-settings-sections">
+          <fieldset class="rs-settings-section">
+            <legend>GIF export</legend>
+            <div class="rs-settings-grid">
+              <label class="rs-settings-field" for="settingsGifFrameRateControl">
+                <span>Frame rate</span>
+                <select id="settingsGifFrameRateControl">
+                  <option value="10">10 fps</option>
+                  <option value="15" selected>15 fps</option>
+                  <option value="20">20 fps</option>
+                </select>
+              </label>
+              <label class="rs-settings-field" for="settingsGifResolutionControl">
+                <span>Resolution</span>
+                <select id="settingsGifResolutionControl">
+                  <option value="640">Compact, 640 px</option>
+                  <option value="960" selected>Standard, 960 px</option>
+                  <option value="1280">Large, 1280 px</option>
+                </select>
+              </label>
+              <label class="rs-settings-field" for="settingsGifColoursControl">
+                <span>Colour palette</span>
+                <select id="settingsGifColoursControl">
+                  <option value="64">64 colours</option>
+                  <option value="128" selected>128 colours</option>
+                  <option value="256">256 colours</option>
+                </select>
+              </label>
+            </div>
+            <div class="rs-settings-switches rs-settings-switches-compact">
+              <label class="rs-toggle" for="settingsGifLoopToggle">
+                <span>Loop continuously</span>
+                <input id="settingsGifLoopToggle" type="checkbox" checked />
+                <span class="rs-toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <p class="rs-settings-hint">Higher frame rates, resolutions and colour counts create larger files.</p>
+          </fieldset>
+
+          <fieldset class="rs-settings-section">
+            <legend>MP4 export</legend>
+            <div class="rs-settings-grid">
+              <label class="rs-settings-field" for="settingsFrameRateControl">
+                <span>Frame rate</span>
+                <select id="settingsFrameRateControl">
+                  <option value="24">24 fps</option>
+                  <option value="30">30 fps</option>
+                  <option value="60" selected>60 fps</option>
+                </select>
+              </label>
+              <label class="rs-settings-field" for="settingsResolutionControl">
+                <span>Resolution</span>
+                <select id="settingsResolutionControl">
+                  <option value="1280" selected>HD, 1280 px</option>
+                  <option value="1920">Full HD, 1920 px</option>
+                  <option value="2560">QHD, 2560 px</option>
+                  <option value="3840">4K, 3840 px</option>
+                </select>
+              </label>
+              <label class="rs-settings-field" for="settingsVideoQualityControl">
+                <span>Quality</span>
+                <select id="settingsVideoQualityControl">
+                  <option value="balanced">Balanced</option>
+                  <option value="high" selected>High</option>
+                  <option value="maximum">Maximum</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="rs-settings-section">
+            <legend>Application</legend>
+            <div class="rs-settings-grid">
+              <label class="rs-settings-field" for="settingsPreviewDetailControl">
+                <span>Preview detail</span>
+                <select id="settingsPreviewDetailControl">
+                  <option value="auto" selected>Automatic</option>
+                  <option value="full">Always full</option>
+                  <option value="fast">Faster interaction</option>
+                </select>
+              </label>
+            </div>
+            <div class="rs-settings-switches">
+              <label class="rs-toggle" for="settingsPauseHiddenToggle">
+                <span>Pause playback in hidden tabs</span>
+                <input id="settingsPauseHiddenToggle" type="checkbox" checked />
+                <span class="rs-toggle-track" aria-hidden="true"></span>
+              </label>
+              <label class="rs-toggle" for="settingsRememberProjectToggle">
+                <span>Remember the current project</span>
+                <input id="settingsRememberProjectToggle" type="checkbox" checked />
+                <span class="rs-toggle-track" aria-hidden="true"></span>
+              </label>
+            </div>
+          </fieldset>
         </div>
         <div class="rs-settings-actions">
           <button class="rs-button" id="settingsResetButton" type="button">Restore defaults</button>

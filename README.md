@@ -8,45 +8,56 @@
   <a href="https://fberkemeier.github.io/RepliCanvas/"><strong>Launch RepliCanvas →</strong></a>
 </p>
 
-RepliCanvas is a lightweight browser studio for creating publication-ready DNA replication diagrams and animations. Place origins, shape bubbles and forks, customise the molecule, and export a figure or a complete S-phase animation without a build step.
+RepliCanvas is a free, browser-based studio for drawing, exploring, and animating DNA replication. Shape origins, bubbles, and forks directly on the canvas, customise their molecular presentation, and export publication-ready figures or complete S-phase animations. No installation is required to use the live app.
 
-## Features
+<p align="center">
+  <img
+    src="assets/img/replicanvas-demo.gif"
+    alt="Demonstration of DNA replication editing in RepliCanvas"
+    width="900"
+  />
+</p>
 
-- **Three geometries.** Use linear DNA, periodic circular DNA, or paint arbitrary free-form molecules on an independent canvas.
-- **Free-form editing.** Free form opens as a blank workspace with the Paint brush selected and its genomic scale hidden. Paint smoothly interpolated DNA paths, snap new or reshaped ends to highlighted connection points, close a stroke back onto its first point to create a periodic loop, erase sections to split a molecule, and keep several independent pieces on one canvas. Snapped pieces remain independent replication segments, and each piece retains its own shape, base-pair pattern, origins, forks and replication state when unrelated DNA is added or removed; the total genomic-length control updates automatically without refitting the canvas.
-- **Interactive replication.** Add origins, drag bubbles or individual forks, split replicated regions, create strand breaks, and selectively reverse replication. Circular and closed free-form molecules wrap continuously through their genomic seam, including smooth strand geometry as forks cross genomic zero.
-- **Flexible molecular styling.** Choose Standard, Straight or Minimal representations; tune base-pair resolution, strand dimensions, spacing, handedness, crossover behaviour, fork transitions, contours and colour schemes. Two-colour base pairs support depth-aware separation and constrained angular tilt.
-- **Animation and export.** Run S phase continuously or base pair by base pair while preserving origin firing schedules. Export tightly cropped PNG, SVG and PDF files, or generate an MP4 with configurable frame rate, resolution and quality. MP4 generation shows determinate progress and downloads automatically when complete; it remains disabled until at least one origin is present.
-- **Responsive at scale.** Adaptive path sampling, cached free-form arc-length metrics and interaction-time detail reduction keep large genomes and complex drawings responsive while retaining full export detail.
-- **Reusable projects.** Save and reload complete configurations, including free-form topology and component-specific replication edits, with optional browser persistence.
+## Create a replication figure or animation
 
-The canvas toolbar appears vertically in the lower-left corner in **Free form** geometry. Use **DNA tools** for origins and forks, **Shape** to reshape a path, **Paint** to add a piece, and **Erase** to remove or split DNA. Open ends are always marked as connectable targets during Paint and Shape editing, and both ends of a stroke remain visible while it is being painted. Snapping to another piece creates a smooth visual link while preserving independent replication; the loop option controls only whether a stroke can snap back to its own first point and become periodic. Erase shows an adjacent size slider and a painted footprint that matches the area being removed; the remaining controls close or reopen the selected loop and delete the selected piece.
+1. **Choose a molecule.** Start with linear or circular DNA, or paint an arbitrary free-form path.
+2. **Build and style the model.** Add origins, move bubbles and individual forks, then adjust strands, base pairs, colours, labels, geometry, and replication timing.
+3. **Animate or export.** Run the S phase, save the configuration for later, or download the result as a figure, GIF, or video.
 
-## Run locally
+## What RepliCanvas can do
 
-From the repository root:
+- **Edit replication directly.** Add origins, drag forks and bubbles, split replicated regions, create strand breaks, and step through replication continuously or one base pair at a time.
+- **Support several visual languages.** Switch between Standard, Straight, and Minimal representations and tune spacing, dimensions, handedness, transitions, contours, colours, and layers.
+- **Draw free-form DNA.** Paint smooth open or periodic molecules, connect paths, reshape them, erase sections, and keep several independent DNA pieces on the same canvas.
+- **Save reusable projects.** Download a complete configuration and load it later to continue editing every relevant parameter and replication event.
 
-```bash
-python -m http.server 8000
-```
+<p align="center">
+  <img
+    src="assets/img/replicanvas-circular-demo.gif"
+    alt="Circular DNA replication animation created with RepliCanvas"
+    width="620"
+  />
+</p>
 
-Then open `http://localhost:8000/` in a modern Chromium-based browser.
+## Export
 
-## Development
+| Format | Best for |
+| --- | --- |
+| **PNG** | High-resolution raster figures |
+| **SVG** | Editable vector artwork |
+| **PDF** | Print-ready figures |
+| **GIF** | Lightweight, easily shared animations |
+| **MP4** | High-quality S-phase videos |
 
-Run the regression suite with:
-
-```bash
-node --test tests/replicanvas.logic.test.cjs
-```
+GIF and MP4 frame rate and dimensions are configured independently under **Settings**. GIF also offers palette and looping controls; MP4 offers video-quality controls. A current Chromium-based browser is recommended for the most reliable animation export.
 
 ## Citation
 
-Please cite RepliCanvas using the metadata in [`CITATION.cff`](CITATION.cff).
+If RepliCanvas supports your work, please cite the software using the metadata in [`CITATION.cff`](CITATION.cff). GitHub also exposes this through **Cite this repository**.
 
-## Issues
+## Issues and contact
 
-Bug reports, suggestions and scientific feature requests are welcome through the [GitHub issue tracker](https://github.com/fberkemeier/RepliCanvas/issues).
+Bug reports, feature ideas, and scientific suggestions are welcome through the [GitHub issue tracker](https://github.com/fberkemeier/RepliCanvas/issues).
 
 **Francisco Berkemeier**  
 [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk) · [github.com/fberkemeier](https://github.com/fberkemeier)

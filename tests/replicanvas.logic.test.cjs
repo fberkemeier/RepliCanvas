@@ -28,6 +28,7 @@ const testApi = `
     absorbDormantOriginsDuringForkDrag,
     angledBasePairEndpoints,
     animationFrameRate,
+    animationFramePlan,
     animationResolution,
     buildCircularRegions,
     artworkAspectTransform,
@@ -216,6 +217,14 @@ const testApi = `
     genomicPositionAtFraction,
     genomeDistanceScale,
     gridColumnCount,
+    gifColourCount,
+    gifFrameDelayCentiseconds,
+    gifFramePlan,
+    gifFrameRate,
+    gifLzwEncode,
+    gifLoops,
+    gifPaletteSpec,
+    gifResolution,
     helixWave,
     insetBasePairSegment,
     invertHexColour,
@@ -254,6 +263,7 @@ const testApi = `
     normaliseFreeformState,
     normaliseStateSchema,
     normaliseExportStrokeWidths,
+    normaliseGifBlob,
     normaliseMp4Blob,
     normaliseCutRegions,
     nextAvailableOriginId,
@@ -304,6 +314,7 @@ const testApi = `
     scaleBarEnabled,
     settingsModalIsOpen,
     schematicNascentStartProfile,
+    saveGifBlob,
     saveMp4Blob,
     screenToWorld,
     setDragState(value) { dragState = value; },
@@ -368,6 +379,8 @@ const testApi = `
     videoBitsPerSecond,
     videoFramePlan,
     videoTravelAtFrame,
+    createGifEncoder,
+    quantizeGifPixels,
     withArtworkStrokeScale,
     artworkStrokeAttributes,
     wrapFraction,
@@ -3109,6 +3122,165 @@ test("MP4 completion starts one browser download without a save picker or ready 
   }
 });
 
+test("GIF encoder writes valid indexed frames, transparency, looping and stable timing", async () => {
+  const palette = api.gifPaletteSpec(128);
+  assert.equal(palette.palette.length, 128 * 3);
+  assert.equal(palette.minimumCodeSize, 7);
+  const quantized = api.quantizeGifPixels(
+    Uint8ClampedArray.from([
+      10, 20, 30, 0,
+      20, 80, 140, 255,
+    ]),
+    palette
+  );
+  assert.equal(quantized[0], palette.transparentIndex);
+  assert.notEqual(quantized[1], palette.transparentIndex);
+
+  // Decode the standalone LZW stream with a deliberately different decoder.
+  // The pseudo-random input crosses every GIF dictionary-width boundary and
+  // forces at least one 4096-entry dictionary reset.
+  const original = new Uint8Array(30000);
+  let seed = 0x51f15e;
+  for (let index = 0; index < original.length; index += 1) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    original[index] = seed >>> 25;
+  }
+  const compressed = api.gifLzwEncode(original, 7);
+  const clearCode = 1 << 7;
+  const endCode = clearCode + 1;
+  let bitOffset = 0;
+  let codeSize = 8;
+  let nextCode = endCode + 1;
+  let previous = null;
+  let dictionary = [];
+  const decoded = [];
+  const resetDictionary = () => {
+    dictionary = Array.from({ length: clearCode }, (_, value) => Uint8Array.of(value));
+    dictionary.length = endCode + 1;
+    codeSize = 8;
+    nextCode = endCode + 1;
+    previous = null;
+  };
+  const readCode = () => {
+    let code = 0;
+    for (let bit = 0; bit < codeSize; bit += 1) {
+      code |= ((compressed[(bitOffset + bit) >>> 3] >>> ((bitOffset + bit) & 7)) & 1) << bit;
+    }
+    bitOffset += codeSize;
+    return code;
+  };
+  resetDictionary();
+  while (bitOffset + codeSize <= compressed.length * 8) {
+    const code = readCode();
+    if (code === clearCode) {
+      resetDictionary();
+      continue;
+    }
+    if (code === endCode) break;
+    let entry;
+    if (code < nextCode && dictionary[code]) {
+      entry = dictionary[code];
+    } else if (code === nextCode && previous) {
+      entry = Uint8Array.from([...previous, previous[0]]);
+    } else {
+      assert.fail(`invalid GIF LZW code ${code}`);
+    }
+    decoded.push(...entry);
+    if (previous && nextCode < 4096) {
+      dictionary[nextCode] = Uint8Array.from([...previous, entry[0]]);
+      nextCode += 1;
+      if (nextCode === 1 << codeSize && codeSize < 12) codeSize += 1;
+    }
+    previous = entry;
+  }
+  assert.deepEqual(Uint8Array.from(decoded), original);
+
+  const encoder = api.createGifEncoder(2, 2, { colors: 64, loop: true });
+  encoder.addFrame(
+    Uint8ClampedArray.from([
+      0, 0, 0, 0, 30, 90, 150, 255,
+      160, 40, 50, 255, 240, 245, 245, 255,
+    ]),
+    { delayCentiseconds: 7 }
+  );
+  encoder.addFrame(
+    Uint8ClampedArray.from([
+      30, 90, 150, 255, 0, 0, 0, 0,
+      240, 245, 245, 255, 160, 40, 50, 255,
+    ]),
+    { delayCentiseconds: 6 }
+  );
+  assert.equal(encoder.frameCount, 2);
+  const blob = encoder.finish();
+  assert.equal(blob.type, "image/gif");
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  assert.equal(Buffer.from(bytes.subarray(0, 6)).toString("ascii"), "GIF89a");
+  assert.equal(bytes[6] | (bytes[7] << 8), 2);
+  assert.equal(bytes[8] | (bytes[9] << 8), 2);
+  assert.ok(Buffer.from(bytes).includes(Buffer.from("NETSCAPE2.0")));
+  assert.equal(bytes.at(-1), 0x3b);
+  let graphicControlBlocks = 0;
+  for (let index = 0; index < bytes.length - 2; index += 1) {
+    if (bytes[index] === 0x21 && bytes[index + 1] === 0xf9 && bytes[index + 2] === 0x04) {
+      graphicControlBlocks += 1;
+      assert.equal(bytes[index + 3], 0x09, "frames restore a transparent background");
+    }
+  }
+  assert.equal(graphicControlBlocks, 2);
+
+  const delays = Array.from({ length: 45 }, (_, index) =>
+    api.gifFrameDelayCentiseconds(index, 15)
+  );
+  assert.deepEqual([...new Set(delays)].sort(), [6, 7]);
+  assert.equal(delays.reduce((sum, delay) => sum + delay, 0), 300);
+});
+
+test("GIF appears before MP4 and completion starts one browser download", () => {
+  const pdfIndex = html.indexOf('id="exportPdfButton"');
+  const gifIndex = html.indexOf('id="exportGifButton"');
+  const mp4Index = html.indexOf('id="exportMp4Button"');
+  assert.ok(pdfIndex < gifIndex && gifIndex < mp4Index);
+  assert.match(source, /exportGifButton\.addEventListener\("click", \(\) => runDownload\(exportGif\)\)/);
+
+  const originalCreateElement = sandbox.document.createElement;
+  const originalBody = sandbox.document.body;
+  const originalUrl = sandbox.URL;
+  const originalSetTimeout = sandbox.setTimeout;
+  const link = {
+    clicked: 0,
+    click() { this.clicked += 1; },
+    remove() {},
+  };
+  sandbox.document.createElement = (tagName) => {
+    assert.equal(tagName, "a");
+    return link;
+  };
+  sandbox.document.body = { appendChild() {} };
+  sandbox.URL = {
+    createObjectURL(blob) {
+      assert.equal(blob.type, "image/gif");
+      return "blob:replicanvas-gif";
+    },
+    revokeObjectURL() {},
+  };
+  sandbox.setTimeout = (callback) => {
+    callback();
+    return 1;
+  };
+
+  try {
+    assert.equal(api.saveGifBlob(new Blob(["gif"]), "replicanvas.gif"), "download");
+    assert.equal(link.href, "blob:replicanvas-gif");
+    assert.equal(link.download, "replicanvas.gif");
+    assert.equal(link.clicked, 1);
+  } finally {
+    sandbox.document.createElement = originalCreateElement;
+    sandbox.document.body = originalBody;
+    sandbox.URL = originalUrl;
+    sandbox.setTimeout = originalSetTimeout;
+  }
+});
+
 test("MP4 busy state exposes determinate progress and remains unavailable without origins", () => {
   const attributes = {};
   const frameAttributes = {};
@@ -3134,7 +3306,9 @@ test("MP4 busy state exposes determinate progress and remains unavailable withou
     setAttribute(name, value) { spinnerAttributes[name] = value; },
   };
   const exportButton = { disabled: false };
+  const gifExportButton = { disabled: false };
   const exportDescription = { textContent: "" };
+  const gifExportDescription = { textContent: "" };
   api.setState(freshState());
   api.setElements({
     canvasFrame,
@@ -3143,6 +3317,8 @@ test("MP4 busy state exposes determinate progress and remains unavailable withou
     downloadButtonSpinner: spinner,
     exportMp4Button: exportButton,
     exportMp4Description: exportDescription,
+    exportGifButton: gifExportButton,
+    exportGifDescription: gifExportDescription,
   });
 
   api.setVideoExportBusy(true);
@@ -3163,6 +3339,7 @@ test("MP4 busy state exposes determinate progress and remains unavailable withou
   assert.equal(attributes["aria-busy"], "false");
   assert.equal(frameAttributes["aria-busy"], false);
   assert.equal(exportButton.disabled, false);
+  assert.equal(gifExportButton.disabled, false);
 
   const empty = freshState();
   empty.origins = [];
@@ -3170,7 +3347,9 @@ test("MP4 busy state exposes determinate progress and remains unavailable withou
   assert.equal(api.animationExportAvailable(empty), false);
   api.setVideoExportBusy(false);
   assert.equal(exportButton.disabled, true, "MP4 should be greyed out when S phase has no origins");
+  assert.equal(gifExportButton.disabled, true, "GIF should be greyed out when S phase has no origins");
   assert.match(source, /exportMp4Description[\s\S]*Add an origin to enable/);
+  assert.match(source, /exportGifDescription[\s\S]*Add an origin to enable/);
   assert.match(css, /conic-gradient\([\s\S]*?--rs-video-progress/);
   assert.match(css, /\.rs-download-menu button:disabled\s*\{[^}]*cursor:\s*not-allowed/s);
 });
@@ -5769,18 +5948,28 @@ test("base-pair angles remain strand-constrained and vertical by default", () =>
   assert.ok(nearEnd.secondX <= api.VIEW.x1 + 1e-10);
 });
 
-test("Settings normalise frame rate, resolution, quality and preview performance", () => {
+test("Settings organise and normalise independent GIF, MP4 and application options", () => {
   assert.match(html, /id="settingsMenuButton"[^>]*role="menuitem"/);
   assert.match(html, /id="settingsModal"[^>]*hidden/);
+  assert.match(html, /<legend>GIF export<\/legend>[\s\S]*<legend>MP4 export<\/legend>[\s\S]*<legend>Application<\/legend>/);
+  assert.match(html, /id="settingsGifFrameRateControl"[\s\S]*10 fps[\s\S]*15 fps[\s\S]*20 fps/);
+  assert.match(html, /id="settingsGifResolutionControl"[\s\S]*640 px[\s\S]*960 px[\s\S]*1280 px/);
+  assert.match(html, /id="settingsGifColoursControl"[\s\S]*64 colours[\s\S]*128 colours[\s\S]*256 colours/);
+  assert.match(html, /id="settingsGifLoopToggle"[^>]*checked/);
   assert.match(html, /id="settingsFrameRateControl"[\s\S]*24 fps[\s\S]*30 fps[\s\S]*60 fps/);
   assert.match(html, /id="settingsResolutionControl"[\s\S]*1280 px[\s\S]*1920 px[\s\S]*2560 px[\s\S]*3840 px/);
   assert.match(css, /\.rs-settings-backdrop\s*\{/);
+  assert.match(css, /\.rs-settings-section\s*\{/);
   assert.match(source, /elements\.settingsMenuButton\.addEventListener\("click", openSettingsModal\)/);
 
   const normalised = api.normaliseAppSettings({
     frameRate: 30,
     videoWidth: 3840,
     videoQuality: "maximum",
+    gifFrameRate: 20,
+    gifWidth: 1280,
+    gifColors: 256,
+    gifLoop: false,
     previewDetail: "fast",
     pauseWhenHidden: false,
     rememberProject: false,
@@ -5789,6 +5978,10 @@ test("Settings normalise frame rate, resolution, quality and preview performance
     frameRate: 30,
     videoWidth: 3840,
     videoQuality: "maximum",
+    gifFrameRate: 20,
+    gifWidth: 1280,
+    gifColors: 256,
+    gifLoop: false,
     previewDetail: "fast",
     pauseWhenHidden: false,
     rememberProject: false,
@@ -5796,6 +5989,10 @@ test("Settings normalise frame rate, resolution, quality and preview performance
   api.setAppSettings(normalised);
   assert.equal(api.animationFrameRate(), 30);
   assert.equal(api.animationResolution(), 3840);
+  assert.equal(api.gifFrameRate(), 20);
+  assert.equal(api.gifResolution(), 1280);
+  assert.equal(api.gifColourCount(), 256);
+  assert.equal(api.gifLoops(), false);
   assert.ok(api.videoBitsPerSecond() > 9_000_000);
 
   const state = freshState();
@@ -5803,6 +6000,20 @@ test("Settings normalise frame rate, resolution, quality and preview performance
   const plan = api.videoFramePlan(state);
   assert.equal(plan.frameRate, 30);
   assert.equal(plan.frameDurationSeconds, 1 / 30);
+  const gifPlan = api.gifFramePlan(state);
+  assert.equal(gifPlan.frameRate, 20);
+  assert.equal(gifPlan.frameDurationSeconds, 1 / 20);
+  assert.equal(gifPlan.startTravel, plan.startTravel);
+  assert.equal(gifPlan.completionTravel, plan.completionTravel);
+
+  const invalid = api.normaliseAppSettings({
+    gifFrameRate: 60,
+    gifWidth: 3840,
+    gifColors: 12,
+  });
+  assert.equal(invalid.gifFrameRate, api.APP_SETTINGS_DEFAULTS.gifFrameRate);
+  assert.equal(invalid.gifWidth, api.APP_SETTINGS_DEFAULTS.gifWidth);
+  assert.equal(invalid.gifColors, api.APP_SETTINGS_DEFAULTS.gifColors);
   api.setAppSettings(api.APP_SETTINGS_DEFAULTS);
 });
 

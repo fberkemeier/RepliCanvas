@@ -128,11 +128,18 @@
   const VIDEO_FRAME_RATES = new Set([24, 30, 60]);
   const VIDEO_RESOLUTIONS = new Set([1280, 1920, 2560, 3840]);
   const VIDEO_QUALITY_MODES = new Set(["balanced", "high", "maximum"]);
+  const GIF_FRAME_RATES = new Set([10, 15, 20]);
+  const GIF_RESOLUTIONS = new Set([640, 960, 1280]);
+  const GIF_COLOUR_COUNTS = new Set([64, 128, 256]);
   const PREVIEW_DETAIL_MODES = new Set(["auto", "full", "fast"]);
   const APP_SETTINGS_DEFAULTS = Object.freeze({
     frameRate: VIDEO_FRAME_RATE,
     videoWidth: 1280,
     videoQuality: "high",
+    gifFrameRate: 15,
+    gifWidth: 960,
+    gifColors: 128,
+    gifLoop: true,
     previewDetail: "auto",
     pauseWhenHidden: true,
     rememberProject: true,
@@ -325,6 +332,9 @@
     const source = candidate && typeof candidate === "object" ? candidate : {};
     const configuredFrameRate = Math.round(Number(source.frameRate));
     const configuredWidth = Math.round(Number(source.videoWidth));
+    const configuredGifFrameRate = Math.round(Number(source.gifFrameRate));
+    const configuredGifWidth = Math.round(Number(source.gifWidth));
+    const configuredGifColors = Math.round(Number(source.gifColors));
     return {
       frameRate: VIDEO_FRAME_RATES.has(configuredFrameRate)
         ? configuredFrameRate
@@ -335,6 +345,16 @@
       videoQuality: VIDEO_QUALITY_MODES.has(source.videoQuality)
         ? source.videoQuality
         : APP_SETTINGS_DEFAULTS.videoQuality,
+      gifFrameRate: GIF_FRAME_RATES.has(configuredGifFrameRate)
+        ? configuredGifFrameRate
+        : APP_SETTINGS_DEFAULTS.gifFrameRate,
+      gifWidth: GIF_RESOLUTIONS.has(configuredGifWidth)
+        ? configuredGifWidth
+        : APP_SETTINGS_DEFAULTS.gifWidth,
+      gifColors: GIF_COLOUR_COUNTS.has(configuredGifColors)
+        ? configuredGifColors
+        : APP_SETTINGS_DEFAULTS.gifColors,
+      gifLoop: source.gifLoop !== false,
       previewDetail: PREVIEW_DETAIL_MODES.has(source.previewDetail)
         ? source.previewDetail
         : APP_SETTINGS_DEFAULTS.previewDetail,
@@ -370,6 +390,22 @@
 
   function animationResolution(settings = appSettings) {
     return normaliseAppSettings(settings).videoWidth;
+  }
+
+  function gifFrameRate(settings = appSettings) {
+    return normaliseAppSettings(settings).gifFrameRate;
+  }
+
+  function gifResolution(settings = appSettings) {
+    return normaliseAppSettings(settings).gifWidth;
+  }
+
+  function gifColourCount(settings = appSettings) {
+    return normaliseAppSettings(settings).gifColors;
+  }
+
+  function gifLoops(settings = appSettings) {
+    return normaliseAppSettings(settings).gifLoop;
   }
 
   function videoBitsPerSecond(settings = appSettings) {
@@ -11242,8 +11278,25 @@
     elements.deleteBreaksButton.disabled = state.cuts.length === 0;
     elements.deleteOriginsButton.disabled = state.origins.length === 0;
     elements.playButton.disabled = state.origins.length === 0;
+    const animationAvailable = animationExportAvailable(state);
+    if (elements.exportGifButton) {
+      elements.exportGifButton.disabled = isVideoExporting || !animationAvailable;
+      elements.exportGifButton.title = animationAvailable
+        ? "Export the configured S-phase animation as a GIF"
+        : "Add an origin to enable GIF animation export";
+      elements.exportGifButton.setAttribute(
+        "aria-label",
+        animationAvailable
+          ? "Export GIF animation"
+          : "GIF animation unavailable until an origin is added"
+      );
+      if (elements.exportGifDescription) {
+        elements.exportGifDescription.textContent = animationAvailable
+          ? `${appSettings.gifFrameRate} fps, ${appSettings.gifWidth} px`
+          : "Add an origin to enable";
+      }
+    }
     if (elements.exportMp4Button) {
-      const animationAvailable = animationExportAvailable(state);
       elements.exportMp4Button.disabled = isVideoExporting || !animationAvailable;
       elements.exportMp4Button.title = animationAvailable
         ? "Export the configured S-phase animation"
@@ -14879,7 +14932,7 @@
     });
   }
 
-  async function drawVideoFrame(canvas, context, videoState, forkTravel) {
+  async function drawVideoFrame(canvas, context, videoState, forkTravel, { transparent = false } = {}) {
     const exported = fixedVideoSvgSource(videoState, forkTravel);
     const blob = new Blob([exported.source], { type: "image/svg+xml;charset=utf-8" });
     let image = null;
@@ -14903,8 +14956,13 @@
         });
       }
 
-      context.fillStyle = canvasBackgroundColor(videoState);
-      context.fillRect(0, 0, canvas.width, canvas.height);
+      if (typeof context.clearRect === "function") {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      if (!transparent || videoState.advanced?.includeExportBackground) {
+        context.fillStyle = canvasBackgroundColor(videoState);
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
     } finally {
       if (typeof image?.close === "function") image.close();
@@ -14931,6 +14989,273 @@
     return "download";
   }
 
+  function normaliseGifBlob(blob) {
+    if (!(blob instanceof Blob) || blob.size <= 0) {
+      throw new Error("The GIF encoder returned an empty file");
+    }
+    return blob.type === "image/gif"
+      ? blob
+      : new Blob([blob], { type: "image/gif" });
+  }
+
+  function saveGifBlob(blob, filename) {
+    downloadBlob(normaliseGifBlob(blob), filename);
+    return "download";
+  }
+
+  function gifPaletteSpec(colourCount = APP_SETTINGS_DEFAULTS.gifColors) {
+    const count = GIF_COLOUR_COUNTS.has(Number(colourCount))
+      ? Number(colourCount)
+      : APP_SETTINGS_DEFAULTS.gifColors;
+    const channelBits = count === 64 ? [2, 2, 2] : count === 128 ? [3, 2, 2] : [3, 3, 2];
+    const [redBits, greenBits, blueBits] = channelBits;
+    const redLevels = 2 ** redBits;
+    const greenLevels = 2 ** greenBits;
+    const blueLevels = 2 ** blueBits;
+    // Magenta is deliberately reserved for transparency because it is absent
+    // from the default artwork palette. A colour landing exactly on that cube
+    // cell is moved to its nearest blue neighbour.
+    const transparentIndex =
+      ((redLevels - 1) << (greenBits + blueBits)) |
+      (blueLevels - 1);
+    const palette = new Uint8Array(count * 3);
+    for (let red = 0; red < redLevels; red += 1) {
+      for (let green = 0; green < greenLevels; green += 1) {
+        for (let blue = 0; blue < blueLevels; blue += 1) {
+          const index = (red << (greenBits + blueBits)) | (green << blueBits) | blue;
+          palette[index * 3] = Math.round((red * 255) / Math.max(1, redLevels - 1));
+          palette[index * 3 + 1] = Math.round((green * 255) / Math.max(1, greenLevels - 1));
+          palette[index * 3 + 2] = Math.round((blue * 255) / Math.max(1, blueLevels - 1));
+        }
+      }
+    }
+    palette.fill(0, transparentIndex * 3, transparentIndex * 3 + 3);
+    return {
+      count,
+      tableBits: Math.log2(count),
+      minimumCodeSize: Math.max(2, Math.log2(count)),
+      redBits,
+      greenBits,
+      blueBits,
+      redLevels,
+      greenLevels,
+      blueLevels,
+      transparentIndex,
+      palette,
+    };
+  }
+
+  function quantizeGifPixels(rgba, paletteSpec) {
+    if (!rgba || rgba.length % 4 !== 0) throw new Error("GIF frames must contain RGBA pixels");
+    const spec = paletteSpec || gifPaletteSpec();
+    const indices = new Uint8Array(rgba.length / 4);
+    const greenShift = spec.blueBits;
+    const redShift = spec.greenBits + spec.blueBits;
+    for (let sourceIndex = 0, pixelIndex = 0; sourceIndex < rgba.length; sourceIndex += 4, pixelIndex += 1) {
+      if (rgba[sourceIndex + 3] < 128) {
+        indices[pixelIndex] = spec.transparentIndex;
+        continue;
+      }
+      const red = Math.round((rgba[sourceIndex] * (spec.redLevels - 1)) / 255);
+      const green = Math.round((rgba[sourceIndex + 1] * (spec.greenLevels - 1)) / 255);
+      const blue = Math.round((rgba[sourceIndex + 2] * (spec.blueLevels - 1)) / 255);
+      let index = (red << redShift) | (green << greenShift) | blue;
+      if (index === spec.transparentIndex) index = Math.max(0, index - 1);
+      indices[pixelIndex] = index;
+    }
+    return indices;
+  }
+
+  function gifLzwEncode(indices, minimumCodeSize) {
+    if (!indices || typeof indices.length !== "number" || !indices.length) {
+      throw new Error("GIF frames must contain at least one indexed pixel");
+    }
+    const clearCode = 1 << minimumCodeSize;
+    const endCode = clearCode + 1;
+    const dictionary = new Map();
+    const bytes = [];
+    let currentByte = 0;
+    let currentBits = 0;
+    let codeSize = minimumCodeSize + 1;
+    let nextCode = endCode + 1;
+
+    const emit = (code) => {
+      currentByte |= code << currentBits;
+      currentBits += codeSize;
+      while (currentBits >= 8) {
+        bytes.push(currentByte & 0xff);
+        currentByte >>>= 8;
+        currentBits -= 8;
+      }
+    };
+    const emitDataCode = (code) => {
+      emit(code);
+      // The decoder adds one dictionary entry after consuming this code. The
+      // encoder is one entry ahead, so grow the bit width after emission.
+      if (nextCode === 1 << codeSize && codeSize < 12) codeSize += 1;
+    };
+    const resetDictionary = () => {
+      dictionary.clear();
+      codeSize = minimumCodeSize + 1;
+      nextCode = endCode + 1;
+    };
+
+    emit(clearCode);
+    let prefix = indices[0];
+    for (let index = 1; index < indices.length; index += 1) {
+      const suffix = indices[index];
+      const key = prefix * 256 + suffix;
+      const existing = dictionary.get(key);
+      if (existing !== undefined) {
+        prefix = existing;
+        continue;
+      }
+
+      emitDataCode(prefix);
+      if (nextCode < 4096) {
+        dictionary.set(key, nextCode);
+        nextCode += 1;
+      } else {
+        emit(clearCode);
+        resetDictionary();
+      }
+      prefix = suffix;
+    }
+    emitDataCode(prefix);
+    emit(endCode);
+    if (currentBits > 0) bytes.push(currentByte & 0xff);
+    return Uint8Array.from(bytes);
+  }
+
+  function gifFrameBlock(width, height, indexedPixels, paletteSpec, delayCentiseconds) {
+    const compressed = gifLzwEncode(indexedPixels, paletteSpec.minimumCodeSize);
+    const subBlockCount = Math.ceil(compressed.length / 255);
+    const bytes = new Uint8Array(8 + 10 + 1 + compressed.length + subBlockCount + 1);
+    let offset = 0;
+    const write = (...values) => {
+      bytes.set(values, offset);
+      offset += values.length;
+    };
+    const delay = clamp(Math.round(Number(delayCentiseconds) || 1), 1, 65535);
+    // Restore the transparent background after each full frame. This prevents
+    // moving forks from leaving trails while retaining transparent exports.
+    write(0x21, 0xf9, 0x04, 0x09, delay & 0xff, (delay >>> 8) & 0xff, paletteSpec.transparentIndex, 0x00);
+    write(
+      0x2c,
+      0x00,
+      0x00,
+      0x00,
+      0x00,
+      width & 0xff,
+      (width >>> 8) & 0xff,
+      height & 0xff,
+      (height >>> 8) & 0xff,
+      0x00
+    );
+    write(paletteSpec.minimumCodeSize);
+    for (let sourceOffset = 0; sourceOffset < compressed.length; sourceOffset += 255) {
+      const size = Math.min(255, compressed.length - sourceOffset);
+      write(size);
+      bytes.set(compressed.subarray(sourceOffset, sourceOffset + size), offset);
+      offset += size;
+    }
+    write(0x00);
+    return bytes;
+  }
+
+  function createGifEncoder(width, height, options = {}) {
+    const frameWidth = Math.round(Number(width));
+    const frameHeight = Math.round(Number(height));
+    if (
+      !Number.isInteger(frameWidth) ||
+      !Number.isInteger(frameHeight) ||
+      frameWidth < 1 ||
+      frameHeight < 1 ||
+      frameWidth > 65535 ||
+      frameHeight > 65535
+    ) {
+      throw new Error("GIF dimensions must be integers between 1 and 65535 pixels");
+    }
+
+    const paletteSpec = gifPaletteSpec(options.colors);
+    const header = new Uint8Array(13 + paletteSpec.palette.length);
+    header.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0);
+    header[6] = frameWidth & 0xff;
+    header[7] = (frameWidth >>> 8) & 0xff;
+    header[8] = frameHeight & 0xff;
+    header[9] = (frameHeight >>> 8) & 0xff;
+    header[10] = 0x80 | ((paletteSpec.tableBits - 1) << 4) | (paletteSpec.tableBits - 1);
+    header[11] = paletteSpec.transparentIndex;
+    header[12] = 0;
+    header.set(paletteSpec.palette, 13);
+
+    const parts = [header];
+    if (options.loop !== false) {
+      parts.push(
+        Uint8Array.from([
+          0x21, 0xff, 0x0b,
+          0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30,
+          0x03, 0x01, 0x00, 0x00, 0x00,
+        ])
+      );
+    }
+    let frameCount = 0;
+
+    return {
+      addFrame(rgba, { delayCentiseconds = 1 } = {}) {
+        if (!rgba || rgba.length !== frameWidth * frameHeight * 4) {
+          throw new Error("GIF frame dimensions do not match the encoder");
+        }
+        const indexedPixels = quantizeGifPixels(rgba, paletteSpec);
+        parts.push(
+          gifFrameBlock(
+            frameWidth,
+            frameHeight,
+            indexedPixels,
+            paletteSpec,
+            delayCentiseconds
+          )
+        );
+        frameCount += 1;
+      },
+      finish() {
+        if (!frameCount) throw new Error("GIF animations require at least one frame");
+        return new Blob([...parts, Uint8Array.of(0x3b)], { type: "image/gif" });
+      },
+      get frameCount() {
+        return frameCount;
+      },
+    };
+  }
+
+  async function encodeGifAnimation(videoState, canvas, context, settings = appSettings) {
+    const resolved = normaliseAppSettings(settings);
+    const plan = gifFramePlan(videoState, resolved);
+    const encoder = createGifEncoder(canvas.width, canvas.height, {
+      colors: resolved.gifColors,
+      loop: resolved.gifLoop,
+    });
+
+    for (let frameIndex = 0; frameIndex <= plan.lastFrameIndex; frameIndex += 1) {
+      const forkTravel = videoTravelAtFrame(plan, frameIndex);
+      const model = await drawVideoFrame(canvas, context, videoState, forkTravel, {
+        transparent: true,
+      });
+      const frame = context.getImageData(0, 0, canvas.width, canvas.height);
+      encoder.addFrame(frame.data, {
+        delayCentiseconds: gifFrameDelayCentiseconds(frameIndex, plan.frameRate),
+      });
+      setVideoExportProgress(
+        0.02 + 0.96 * ((frameIndex + 1) / Math.max(1, plan.lastFrameIndex + 1))
+      );
+      if (frameIndex % plan.frameRate === 0 || frameIndex === plan.lastFrameIndex) {
+        setStatus(`Encoding ${plan.frameRate} fps GIF... ${Math.round(replicatedFraction(model))}%`);
+      }
+      if (frameIndex % 4 === 3) await wait(0);
+    }
+    return encoder.finish();
+  }
+
   function forkCompletionTravel(sourceState = state) {
     if (!sourceState.origins.length) return forkTravelBounds(sourceState).zero;
     const bounds = forkTravelBounds(sourceState);
@@ -14952,12 +15277,15 @@
     return upper;
   }
 
-  function videoFramePlan(videoState, settings = appSettings) {
+  function animationFramePlan(videoState, configuredFrameRate) {
     // Legacy snapshots may contain zero, negative, or invalid speed values.
     // Export must still cover the complete phase instead of producing one 0%
     // frame; supported positive speeds retain their configured timing.
     const speed = playbackSpeed(videoState);
-    const frameRate = animationFrameRate(settings);
+    const requestedFrameRate = Number(configuredFrameRate);
+    const frameRate = Number.isFinite(requestedFrameRate) && requestedFrameRate > 0
+      ? requestedFrameRate
+      : VIDEO_FRAME_RATE;
     const startTravel = forkTravelBounds(videoState).zero;
     const completionTravel = forkCompletionTravel(videoState);
     const travelPerFrame =
@@ -14975,6 +15303,23 @@
       lastFrameIndex: travelPerFrame > 0 ? Math.ceil(travelSpan / travelPerFrame) : 0,
       frameDurationSeconds: 1 / frameRate,
     };
+  }
+
+  function videoFramePlan(videoState, settings = appSettings) {
+    return animationFramePlan(videoState, animationFrameRate(settings));
+  }
+
+  function gifFramePlan(videoState, settings = appSettings) {
+    return animationFramePlan(videoState, gifFrameRate(settings));
+  }
+
+  function gifFrameDelayCentiseconds(frameIndex, frameRate) {
+    const index = Math.max(0, Math.floor(Number(frameIndex) || 0));
+    const rate = Math.max(1, Number(frameRate) || APP_SETTINGS_DEFAULTS.gifFrameRate);
+    return Math.max(
+      1,
+      Math.round(((index + 1) * 100) / rate) - Math.round((index * 100) / rate)
+    );
   }
 
   function videoTravelAtFrame(plan, frameIndex) {
@@ -15280,6 +15625,9 @@
     if (elements.exportMp4Button) {
       elements.exportMp4Button.disabled = busy || !animationExportAvailable(state);
     }
+    if (elements.exportGifButton) {
+      elements.exportGifButton.disabled = busy || !animationExportAvailable(state);
+    }
     elements.downloadButton.disabled = busy;
     elements.downloadButtonLabel.textContent = busy ? "Generating..." : "Download";
     if (elements.downloadButtonSpinner) elements.downloadButtonSpinner.hidden = !busy;
@@ -15289,6 +15637,43 @@
     if (!busy) {
       videoExportProgress = 0;
       elements.downloadButtonSpinner?.style?.setProperty?.("--rs-video-progress", "0");
+    }
+  }
+
+  async function exportGif() {
+    if (isVideoExporting) return;
+    if (!animationExportAvailable(state)) {
+      setStatus("Add an origin before exporting an animation");
+      return;
+    }
+
+    if (typeof HTMLCanvasElement === "undefined") {
+      setStatus("GIF export is unavailable in this browser");
+      return;
+    }
+
+    const videoState = makeVideoExportState();
+    const filename = exportFilename("gif");
+    setVideoExportBusy(true);
+
+    try {
+      const dimensions = fixedVideoSvgSource(videoState, videoState.forkTravel);
+      const canvas = document.createElement("canvas");
+      canvas.width = gifResolution();
+      canvas.height = Math.max(1, Math.round((canvas.width * dimensions.height) / dimensions.width));
+      const context = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
+      if (!context) throw new Error("Canvas rendering is unavailable");
+
+      const animation = await encodeGifAnimation(videoState, canvas, context);
+      setVideoExportProgress(0.99);
+      saveGifBlob(animation, filename);
+      setVideoExportProgress(1);
+      setStatus("GIF download started");
+    } catch (error) {
+      console.error("GIF export failed", error);
+      setStatus(`GIF export failed: ${error instanceof Error ? error.message : "the animation could not be encoded"}`);
+    } finally {
+      setVideoExportBusy(false);
     }
   }
 
@@ -15399,6 +15784,18 @@
 
   function syncSettingsControls() {
     appSettings = normaliseAppSettings(appSettings);
+    if (elements.settingsGifFrameRateControl) {
+      elements.settingsGifFrameRateControl.value = String(appSettings.gifFrameRate);
+    }
+    if (elements.settingsGifResolutionControl) {
+      elements.settingsGifResolutionControl.value = String(appSettings.gifWidth);
+    }
+    if (elements.settingsGifColoursControl) {
+      elements.settingsGifColoursControl.value = String(appSettings.gifColors);
+    }
+    if (elements.settingsGifLoopToggle) {
+      elements.settingsGifLoopToggle.checked = appSettings.gifLoop;
+    }
     if (elements.settingsFrameRateControl) {
       elements.settingsFrameRateControl.value = String(appSettings.frameRate);
     }
@@ -15417,6 +15814,11 @@
     if (elements.settingsRememberProjectToggle) {
       elements.settingsRememberProjectToggle.checked = appSettings.rememberProject;
     }
+    if (elements.exportGifDescription) {
+      elements.exportGifDescription.textContent = animationExportAvailable(state)
+        ? `${appSettings.gifFrameRate} fps, ${appSettings.gifWidth} px`
+        : "Add an origin to enable";
+    }
     if (elements.exportMp4Description) {
       elements.exportMp4Description.textContent = animationExportAvailable(state)
         ? `${appSettings.frameRate} fps, ${appSettings.videoWidth} px`
@@ -15430,6 +15832,10 @@
       frameRate: elements.settingsFrameRateControl?.value ?? previous.frameRate,
       videoWidth: elements.settingsResolutionControl?.value ?? previous.videoWidth,
       videoQuality: elements.settingsVideoQualityControl?.value ?? previous.videoQuality,
+      gifFrameRate: elements.settingsGifFrameRateControl?.value ?? previous.gifFrameRate,
+      gifWidth: elements.settingsGifResolutionControl?.value ?? previous.gifWidth,
+      gifColors: elements.settingsGifColoursControl?.value ?? previous.gifColors,
+      gifLoop: elements.settingsGifLoopToggle?.checked ?? previous.gifLoop,
       previewDetail: elements.settingsPreviewDetailControl?.value ?? previous.previewDetail,
       pauseWhenHidden: elements.settingsPauseHiddenToggle?.checked ?? previous.pauseWhenHidden,
       rememberProject: elements.settingsRememberProjectToggle?.checked ?? previous.rememberProject,
@@ -15929,6 +16335,10 @@
       if (event.target === elements.settingsModal) closeSettingsModal();
     });
     [
+      elements.settingsGifFrameRateControl,
+      elements.settingsGifResolutionControl,
+      elements.settingsGifColoursControl,
+      elements.settingsGifLoopToggle,
       elements.settingsFrameRateControl,
       elements.settingsResolutionControl,
       elements.settingsVideoQualityControl,
@@ -15950,6 +16360,7 @@
     elements.exportPngButton.addEventListener("click", () => runDownload(exportPng));
     elements.exportSvgButton.addEventListener("click", () => runDownload(exportSvg));
     elements.exportPdfButton.addEventListener("click", () => runDownload(exportPdf));
+    elements.exportGifButton.addEventListener("click", () => runDownload(exportGif));
     elements.exportMp4Button.addEventListener("click", () => runDownload(exportMp4));
     elements.playButton.addEventListener("click", toggleAnimation);
     elements.deleteOriginsButton.addEventListener("click", deleteAllOrigins);
@@ -16116,6 +16527,10 @@
       "settingsMenuButton",
       "settingsModal",
       "settingsCloseButton",
+      "settingsGifFrameRateControl",
+      "settingsGifResolutionControl",
+      "settingsGifColoursControl",
+      "settingsGifLoopToggle",
       "settingsFrameRateControl",
       "settingsResolutionControl",
       "settingsVideoQualityControl",
@@ -16130,6 +16545,8 @@
       "exportPngButton",
       "exportSvgButton",
       "exportPdfButton",
+      "exportGifButton",
+      "exportGifDescription",
       "exportMp4Button",
       "exportMp4Description",
       "deleteOriginsButton",

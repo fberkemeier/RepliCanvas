@@ -2743,6 +2743,34 @@ html[data-theme="dark"] .rs-about-close:focus-visible {
   line-height: 1.55;
 }
 
+.rs-settings-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.rs-settings-section {
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 18px;
+  border: 0;
+  border-bottom: 1px solid #dce7e9;
+}
+
+.rs-settings-section:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.rs-settings-section legend {
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 0;
+  color: #23434e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
 .rs-settings-grid {
   display: grid;
   gap: 13px 16px;
@@ -2773,10 +2801,20 @@ html[data-theme="dark"] .rs-about-close:focus-visible {
 .rs-settings-switches {
   display: grid;
   gap: 3px;
-  margin-top: 20px;
-  padding: 14px 0;
+  margin-top: 14px;
+  padding: 12px 0 0;
   border-top: 1px solid #dce7e9;
-  border-bottom: 1px solid #dce7e9;
+}
+
+.rs-settings-switches-compact {
+  padding-top: 8px;
+}
+
+.rs-settings-hint {
+  margin: 10px 0 0;
+  color: #6a7e85;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .rs-settings-actions {
@@ -2804,7 +2842,8 @@ html[data-theme="dark"] .rs-settings-dialog h2 {
 
 html[data-theme="dark"] .rs-settings-dialog > p,
 html[data-theme="dark"] .rs-settings-field,
-html[data-theme="dark"] .rs-settings-switches .rs-toggle {
+html[data-theme="dark"] .rs-settings-switches .rs-toggle,
+html[data-theme="dark"] .rs-settings-hint {
   color: #b8c8cd;
 }
 
@@ -2814,8 +2853,13 @@ html[data-theme="dark"] .rs-settings-field select {
   color: #eef6f8;
 }
 
+html[data-theme="dark"] .rs-settings-section,
 html[data-theme="dark"] .rs-settings-switches {
   border-color: #3a4b51;
+}
+
+html[data-theme="dark"] .rs-settings-section legend {
+  color: #dce8eb;
 }
 
 html[data-theme="dark"] .rs-settings-close {
