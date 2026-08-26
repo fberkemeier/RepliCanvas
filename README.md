@@ -5,7 +5,7 @@
 <p align="center"><strong>Make beautiful figures and videos of DNA replication.</strong></p>
 
 <p align="center">
-  <a href="https://fberkemeier.github.io/RepliCanvas/"><strong>Launch RepliCanvas →</strong></a>
+  <a href="https://fberkemeier.github.io/RepliCanvas/"><strong>Launch RepliCanvas</strong></a>
 </p>
 
 RepliCanvas is a free, browser-based studio for drawing, exploring, and animating DNA replication. Shape origins, bubbles, and forks directly on the canvas, customise their molecular presentation, and export publication-ready figures or complete S-phase animations. No installation is required to use the live app.
@@ -32,11 +32,32 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
 - **Save reusable projects.** Download a complete configuration and load it later to continue editing every relevant parameter and replication event.
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-line-demo-dark.gif" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-line-demo.gif" />
+    <img
+      src="assets/img/replicanvas-line-demo.gif"
+      alt="Linear DNA replication animation created with RepliCanvas"
+      width="620"
+    />
+  </picture>
+</p>
+
+<p align="center">
   <img
     src="assets/img/replicanvas-circular-demo.gif"
     alt="Circular DNA replication animation created with RepliCanvas"
     width="310"
   />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-freeform-demo-dark.gif" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-freeform-demo.gif" />
+    <img
+      src="assets/img/replicanvas-freeform-demo.gif"
+      alt="Free-form DNA replication animation created with RepliCanvas"
+      width="310"
+    />
+  </picture>
 </p>
 
 ## Export
