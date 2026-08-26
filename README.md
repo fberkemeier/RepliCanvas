@@ -18,6 +18,8 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
   />
 </p>
 
+<p align="center"><em>DNA replication in a two-origin system.</em></p>
+
 ## Create a replication figure or animation
 
 1. **Choose a molecule.** Start with linear or circular DNA, or paint an arbitrary free-form path.
@@ -33,32 +35,17 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-line-demo-dark.gif" />
-    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-line-demo.gif" />
+    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-modes-demo-dark.gif" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-modes-demo.gif" />
     <img
-      src="assets/img/replicanvas-line-demo.gif"
-      alt="Linear DNA replication animation created with RepliCanvas"
+      src="assets/img/replicanvas-modes-demo.gif"
+      alt="Linear, circular, and free-form DNA replication modes in RepliCanvas"
       width="620"
     />
   </picture>
 </p>
 
-<p align="center">
-  <img
-    src="assets/img/replicanvas-circular-demo.gif"
-    alt="Circular DNA replication animation created with RepliCanvas"
-    width="310"
-  />
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/img/replicanvas-freeform-demo-dark.gif" />
-    <source media="(prefers-color-scheme: light)" srcset="assets/img/replicanvas-freeform-demo.gif" />
-    <img
-      src="assets/img/replicanvas-freeform-demo.gif"
-      alt="Free-form DNA replication animation created with RepliCanvas"
-      width="310"
-    />
-  </picture>
-</p>
+<p align="center"><em>Three ways to shape a replicating molecule: linear, circular, or entirely free-form.</em></p>
 
 ## Export
 
