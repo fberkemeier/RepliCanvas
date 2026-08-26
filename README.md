@@ -40,7 +40,7 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
     <img
       src="assets/img/replicanvas-modes-demo.gif"
       alt="Linear, circular, and free-form DNA replication modes in RepliCanvas"
-      width="620"
+      width="900"
     />
   </picture>
 </p>
