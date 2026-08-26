@@ -35,7 +35,7 @@ RepliCanvas is a free, browser-based studio for drawing, exploring, and animatin
   <img
     src="assets/img/replicanvas-circular-demo.gif"
     alt="Circular DNA replication animation created with RepliCanvas"
-    width="620"
+    width="310"
   />
 </p>
 
